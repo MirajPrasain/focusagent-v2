@@ -311,7 +311,18 @@ const fetchPersonalizedNudge = async () => {
       try {
         const data = JSON.parse(event.data);
         console.log('📊 Received from backend:', data);
-        
+
+        if (data.error) {
+          const errorMessages: Record<string, string> = {
+            invalid_json: "Invalid session data, please reconnect...",
+            duration_error: "Session duration error, please reconnect...",
+            frame_processing_failed: "Frame processing issue, retrying...",
+            websocket_error: "Connection issue, retrying...",
+          };
+          setStatus(errorMessages[data.error] || `Backend error: ${data.error}`);
+          return;
+        }
+
         const score = data.score;
         const cheatEvents = data.cheat_events;
 
