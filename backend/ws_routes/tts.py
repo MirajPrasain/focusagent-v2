@@ -28,7 +28,8 @@ async def tts_endpoint(body: TTSRequest):
     
     print(f"✅ API Key found: {api_key[:10]}...")
     
-    voice_id = VOICE_MAP.get(body.vibe, VOICE_MAP["calm"])
+    #vibe is received from the frontend as user selects it there.
+    voice_id = VOICE_MAP.get(body.vibe, VOICE_MAP["calm"]) #but here, its set as default calm
     print(f"🎙️ Using voice ID: {voice_id} for vibe: {body.vibe}")
     
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"

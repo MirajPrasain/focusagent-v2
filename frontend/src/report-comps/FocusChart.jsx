@@ -14,8 +14,9 @@ const FocusChart = () => {
         setLoading(true);
         setError(null);
 
+        const MEDIAPIPE_API_URL = import.meta.env.VITE_MEDIAPIPE_API_URL || 'http://localhost:8001';
         const res = await axios.get(
-          "http://localhost:8001/post-session?chart_type=focus"
+          `${MEDIAPIPE_API_URL}/post-session?chart_type=focus`
         );
         
         setChartData(res.data.chart_data || []);

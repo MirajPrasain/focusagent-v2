@@ -18,117 +18,41 @@ export default function RoadmapGenerator() {
     try {
       // Step 1: Analyzing topic
       setLoadingStep("Analyzing your learning goals...");
-      await sleep(1500);
+      await sleep(800);
       
-      // Step 2: Research phase
-      setLoadingStep("Researching latest ML curriculum standards...");
-      await sleep(2000);
+      // Step 2: Preparing request
+      setLoadingStep("Connecting to AI backend...");
+      await sleep(600);
       
-      // Step 3: Building roadmap
-      setLoadingStep("Structuring your personalized roadmap...");
-      await sleep(1800);
+      // Step 3: Generating roadmap
+      setLoadingStep("Generating personalized roadmap...");
       
-      // Step 4: Optimizing learning path
-      setLoadingStep("Optimizing learning path and projects...");
-      await sleep(1200);
+      // Use the existing backend API
+      const response = await fetch(`${import.meta.env.VITE_GEMINI_API_URL}/api/roadmap`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ topic }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const roadmapData = await response.json();
       
-      // Static Machine Learning Roadmap
-      const mlRoadmap = {
-        topic: "Machine Learning",
-        stages: [
-          {
-            title: "Mathematics & Statistics Foundation",
-            subtopics: [
-              "Linear Algebra (Vectors, Matrices, Eigenvalues)",
-              "Calculus (Derivatives, Gradients, Optimization)",
-              "Statistics & Probability",
-              "Descriptive and Inferential Statistics"
-            ],
-            projects: [
-              "Matrix Operations Implementation",
-              "Statistical Analysis Project",
-              "Probability Distribution Visualization"
-            ]
-          },
-          {
-            title: "Programming & Data Manipulation",
-            subtopics: [
-              "Python Programming Fundamentals",
-              "NumPy for Numerical Computing",
-              "Pandas for Data Manipulation",
-              "Data Cleaning and Preprocessing"
-            ],
-            projects: [
-              "Data Cleaning Pipeline",
-              "Exploratory Data Analysis Project",
-              "NumPy Mathematical Operations"
-            ]
-          },
-          {
-            title: "Supervised Learning Algorithms",
-            subtopics: [
-              "Linear and Logistic Regression",
-              "Decision Trees and Random Forests",
-              "Support Vector Machines (SVM)",
-              "K-Nearest Neighbors (KNN)"
-            ],
-            projects: [
-              "House Price Prediction",
-              "Customer Classification System",
-              "Fraud Detection Model"
-            ]
-          },
-          {
-            title: "Unsupervised Learning & Feature Engineering",
-            subtopics: [
-              "K-Means Clustering",
-              "Hierarchical Clustering",
-              "Principal Component Analysis (PCA)",
-              "Feature Selection and Engineering"
-            ],
-            projects: [
-              "Customer Segmentation Analysis",
-              "Dimensionality Reduction Project",
-              "Market Basket Analysis"
-            ]
-          },
-          {
-            title: "Deep Learning Fundamentals",
-            subtopics: [
-              "Neural Networks Architecture",
-              "Backpropagation Algorithm",
-              "Convolutional Neural Networks (CNN)",
-              "Recurrent Neural Networks (RNN)"
-            ],
-            projects: [
-              "Image Classification with CNN",
-              "Text Sentiment Analysis with RNN",
-              "Custom Neural Network Implementation"
-            ]
-          },
-          {
-            title: "Advanced Topics & Deployment",
-            subtopics: [
-              "Model Evaluation and Validation",
-              "Hyperparameter Tuning",
-              "Model Deployment (Flask, FastAPI)",
-              "MLOps and Model Monitoring"
-            ],
-            projects: [
-              "End-to-End ML Pipeline",
-              "Web Application with ML Model",
-              "Model Performance Dashboard"
-            ]
-          }
-        ]
-      };
+      // Step 4: Processing response
+      setLoadingStep("Processing and structuring roadmap...");
+      await sleep(500);
       
-      setRoadmap(mlRoadmap);
+      setRoadmap(roadmapData);
     } catch (error) {
       console.error('Failed to generate roadmap:', error);
       alert('Failed to generate roadmap. Please try again.');
     } finally {
       setLoading(false);
+      setLoadingStep("");
     }
   };
 

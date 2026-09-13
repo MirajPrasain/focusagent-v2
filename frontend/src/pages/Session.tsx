@@ -268,7 +268,8 @@ const fetchPersonalizedNudge = async () => {
   // Setup WebSocket connection and frame sending
   useEffect(() => {
     console.log('🔌 Attempting to connect to MediaPipe backend:', MEDIAPIPE_API_URL);
-    const wsUrl = `ws://${MEDIAPIPE_API_URL.replace('http://', '').replace('https://', '')}/ws/study`;
+    const protocol = MEDIAPIPE_API_URL.startsWith('https://') ? 'wss://' : 'ws://';
+    const wsUrl = `${protocol}${MEDIAPIPE_API_URL.replace('http://', '').replace('https://', '')}/ws/study`;
     console.log('🔌 WebSocket URL:', wsUrl);
     
     const socket = new WebSocket(wsUrl);

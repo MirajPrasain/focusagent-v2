@@ -31,8 +31,9 @@ const CheatChart = () => {
         setLoading(true);
         setError(null);
         
+        const MEDIAPIPE_API_URL = import.meta.env.VITE_MEDIAPIPE_API_URL || 'http://localhost:8001';
         const res = await axios.get(
-          "http://localhost:8001/post-session?chart_type=cheat"
+          `${MEDIAPIPE_API_URL}/post-session?chart_type=cheat`
         );
 
         // Transform to scatter plot format
