@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: hackru-app
+    name: focusagent-v2
     runtime: docker
     plan: starter # Use 'free' for free tier or 'starter' for paid
     region: oregon # Choose your preferred region

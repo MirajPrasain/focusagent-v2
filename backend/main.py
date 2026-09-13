@@ -24,3 +24,8 @@ app.include_router(charts.router)
 
 app.include_router(messages.router)
 app.include_router(tts.router)
+
+
+@app.get("/")
+async def health():
+    return {"status": "ok"}
