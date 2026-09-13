@@ -198,26 +198,36 @@ def process_frame(frame, timestamp=None):
     h, w, _ = frame.shape
     
     # Detect multiple faces
-    detect_multiple_faces(result)
-    
+    multi_face = detect_multiple_faces(result)
+
     # Detect head pose issues
-    detect_head_pose(result, w, h)
-    
+    extreme_turn, looking_down = detect_head_pose(result, w, h)
+
     score, status = get_focus_score(result, w, h)
 
     # Always append the focus score to track trend over time
     focus_scores.append(score)
-    
+
     # Track cheating/distraction events separately
     if score < 40:
         cheat_times.append(round(timestamp, 2))
         cheat_event.append(5)  # Event type 5 for general low focus/distraction
         print(f"🚨 Cheat detected at {timestamp:.2f}s - Score: {score}, Status: {status}")
 
+    current_events = []
+    if multi_face:
+        current_events.append(3)
+    if extreme_turn:
+        current_events.append(2)
+    if looking_down:
+        current_events.append(1)
+    if score < 40:
+        current_events.append(5)
+
     return json.dumps({
-    "score": score,
-    "cheat_events": cheat_event[-1:]  # just latest event if needed
-})
+        "score": score,
+        "cheat_events": current_events
+    })
 
 
 

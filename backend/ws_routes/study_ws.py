@@ -114,11 +114,19 @@ async def study_session_handling(websocket: WebSocket):
             logger.info(f"Session duration set to: {duration} minutes")
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON received: {e}")
-            await websocket.send_text("error:invalid_json")
+            await websocket.send_text(json.dumps({
+                "score": None,
+                "cheat_events": [],
+                "error": "invalid_json"
+            }))
             return
         except Exception as e:
             logger.error(f"Error receiving duration: {e}")
-            await websocket.send_text("error:duration_error")
+            await websocket.send_text(json.dumps({
+                "score": None,
+                "cheat_events": [],
+                "error": "duration_error"
+            }))
             return
 
         # Loop for receiving frames
@@ -154,7 +162,11 @@ async def study_session_handling(websocket: WebSocket):
                     logger.debug(f"Frame {frame_count}: Sent: {result}, Timestamp: {current_timestamp:.2f}s")
                 except Exception as e:
                     logger.error(f"Error processing frame {frame_count}: {e}")
-                    await websocket.send_text("50")
+                    await websocket.send_text(json.dumps({
+                        "score": None,
+                        "cheat_events": [],
+                        "error": "frame_processing_failed"
+                    }))
 
             except WebSocketDisconnect:
                 logger.info("WebSocket disconnected by client")
@@ -169,7 +181,11 @@ async def study_session_handling(websocket: WebSocket):
 
                 # Try to send error acknowledgment
                 try:
-                    await websocket.send_text("error:frame_processing")
+                    await websocket.send_text(json.dumps({
+                        "score": None,
+                        "cheat_events": [],
+                        "error": "websocket_error"
+                    }))
                 except:
                     pass
                 continue
