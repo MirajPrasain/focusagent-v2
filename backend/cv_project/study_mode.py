@@ -2,11 +2,6 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import time
-import matplotlib.pyplot as plt
-import pandas as pd
-from fpdf import FPDF
-from datetime import datetime
-import os
 import json
 
 # --- Initialize Mediapipe ---
@@ -246,86 +241,3 @@ def get_cheat_data():
     global cheat_event
 
     return cheat_times, cheat_event
-
-
-#import os
-# from fpdf import FPDF
-# from datetime import datetime
-# import matplotlib.pyplot as plt
-# import pandas as pd
-
-# # --- Setup Paths ---
-# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# REPORTS_DIR = os.path.join(BASE_DIR, "..", "reports")
-# CHART_PATH = os.path.join(REPORTS_DIR, "focus_trend.png")
-# PDF_PATH = os.path.join(REPORTS_DIR, "study_session_report.pdf")
-
-# def generate_focus_chart():
-#     if not focus_scores:
-#         print("No focus data to plot.")
-#         return
-
-#     timestamps = [round(i * (SESSION_DURATION / len(focus_scores)), 2) for i in range(len(focus_scores))]
-#     smoothed_scores = pd.Series(focus_scores).rolling(window=10, min_periods=1).mean()
-
-#     plt.figure(figsize=(10, 5))
-#     plt.plot(timestamps, smoothed_scores, color="blue", linewidth=2, label="Smoothed Focus Score")
-#     plt.axhline(50, color='red', linestyle='--', label='Distraction Threshold (50)')
-#     plt.axhline(80, color='green', linestyle='--', label='High Focus (80)')
-#     plt.title("Focus Score Over Time")
-#     plt.xlabel("Time (seconds)")
-#     plt.ylabel("Focus Score")
-#     plt.ylim(0, 100)
-#     plt.grid(True)
-#     plt.legend()
-#     plt.tight_layout()
-#     plt.savefig(CHART_PATH)
-#     plt.close()
-#     print(f"Focus trend chart saved at {CHART_PATH}")
-# import os
-
-# def generate_session_pdf(summary_text):
-#     pdf = FPDF()
-#     pdf.add_page()
-#     pdf.set_font("Arial", "B", 16)
-#     pdf.cell(0, 10, "Focus Session Report", ln=True, align='C')
-#     pdf.ln(10)
-#     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-#     pdf.set_font("Arial", "", 12)
-#     pdf.cell(0, 10, f"Generated on: {timestamp}", ln=True)
-#     pdf.ln(10)
-#     for line in summary_text.split("\n"):
-#         pdf.cell(0, 10, line, ln=True)
-#     pdf.ln(10)
-#     pdf.set_font("Arial", "B", 12)
-#     pdf.cell(0, 10, "Focus Score Chart:", ln=True)
-
-#     # 📷 Check if chart image exists before inserting
-#     if os.path.exists(CHART_PATH):
-#         pdf.image(CHART_PATH, x=10, w=190)
-#     else:
-#         print("⚠️ Warning: Chart image missing! Not embedding in PDF.")
-
-#     pdf.output(PDF_PATH)
-#     print(f"PDF report generated at {PDF_PATH}")
-
-
-# def generate_report():
-#     if not os.path.exists(REPORTS_DIR):
-#         os.makedirs(REPORTS_DIR)
-
-#     if focus_scores:
-#         avg_focus = sum(focus_scores) / len(focus_scores)
-#         summary = (
-#             f"Session Duration: {SESSION_DURATION} seconds\n"
-#             f"Average Focus: {avg_focus:.2f}\n"
-#             f"Distractions Detected: {len([s for s in focus_scores if s < 50])}\n"
-#             f"Phone Alerts: {len([1 for s in focus_scores if s == 0])}\n"
-#         )
-#     else:
-#         summary = "No valid focus scores recorded."
-
-#     generate_focus_chart()
-#     generate_session_pdf(summary)
-
-
