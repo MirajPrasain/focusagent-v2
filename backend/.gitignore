@@ -10,4 +10,5 @@ instance/
 *.log
 *.pot
 *.pyc
-*.pyo  
+*.pyo
+yolov5su.pt

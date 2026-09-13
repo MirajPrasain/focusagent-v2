@@ -8,7 +8,6 @@ python-dotenv==1.0.0
 # Computer Vision and AI
 opencv-python-headless==4.8.1.78
 mediapipe==0.10.14
-ultralytics==8.0.206
 numpy>=1.26.0,<1.27.0
 
 # Data Processing and Visualization
