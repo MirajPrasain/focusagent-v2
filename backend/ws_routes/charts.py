@@ -1,6 +1,5 @@
 from fastapi import APIRouter
 from cv_project.study_mode import get_focus_data, get_cheat_data, get_session_duration
-import random
 
 router = APIRouter()
 
@@ -11,15 +10,12 @@ async def get_summary_data(chart_type: str):
     if chart_type == "focus": 
         focus_scores = get_focus_data()
 
-        # Check if focus_scores is missing, empty, or flat (all same values)
         if not focus_scores or session_duration == 0:
-            print("⚠️ No focus data available. Generating test data...")
-            focus_scores = [random.randint(60, 100) for _ in range(60)]
-            session_duration = 1800  # 30 minutes in seconds
-        elif len(set(focus_scores)) <= 1:  # All values are the same (flat data)
-            print("⚠️ Flat focus data detected. Generating test data...")
-            focus_scores = [random.randint(60, 100) for _ in range(60)]
-            session_duration = 1800  # 30 minutes in seconds
+            print("⚠️ No focus data available. Returning empty chart.")
+            return {
+                "chart_data": [],
+                "session_duration": session_duration,
+            }
 
         timestamps = [
             round((i * session_duration) / len(focus_scores))
