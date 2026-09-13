@@ -58,7 +58,7 @@ ENV PORT=8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/', timeout=5)" || exit 1
+    CMD python -c "import os, urllib.request; urllib.request.urlopen(f\"http://localhost:{os.environ.get('PORT', '8000')}/\", timeout=5)" || exit 1
 
 # Run the application with uvicorn
 CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1

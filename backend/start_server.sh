@@ -3,8 +3,12 @@
 # StudyFocus AI Server Startup Script
 echo "🚀 Starting StudyFocus AI Server..."
 
-# Activate virtual environment
-source myenv/bin/activate
+# Activate virtual environment if one exists
+if [ -f myenv/bin/activate ]; then
+    source myenv/bin/activate
+else
+    echo "⚠️  No myenv/ virtualenv found, using system python3"
+fi
 
 # Check if port 8001 is available, otherwise try 8002, 8003, etc.
 PORT=8001
