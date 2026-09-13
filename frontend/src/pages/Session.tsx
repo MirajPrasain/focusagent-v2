@@ -42,9 +42,8 @@ function Session() {
   const [distractionHistory, setDistractionHistory] = useState<DistractionEvent[]>([]);
   const [recentDistractions, setRecentDistractions] = useState(0);
 
-  // API URLs - MediaPipe for face detection, Gemini for AI features
+  // API URL - MediaPipe backend for face detection, AI messages, and TTS
   const MEDIAPIPE_API_URL = import.meta.env.VITE_MEDIAPIPE_API_URL || 'http://localhost:8001';
-  const GEMINI_API_URL = import.meta.env.VITE_GEMINI_API_URL || 'http://localhost:8002';
 
   // Vibe-based styling
   const vibeStyles = {
@@ -238,31 +237,14 @@ useEffect(() => {
   }
 }, [distraction]);
 
-const fetchPersonalizedNudge = async () => {
-  try {
-    const response = await axios.post(`${GEMINI_API_URL}/api/micro-nudge`, {
-      distraction_count: recentDistractions,
-      recent_events: distractionHistory.slice(-5),
-      session_duration: elapsedTime,
-      vibe
-    });
-
-    if (response.data.nudge) {
-      setCurrentNudge({
-        type: response.data.nudge.type,
-        message: response.data.nudge.message
-      });
-    }
-  } catch (err) {
-    console.error("Failed to fetch micro-nudge:", err);
-    // Fallback to default nudges
-    const defaultNudges: NudgeData[] = [
-      { type: 'breathing', message: 'Take a deep breath. Inhale for 4, hold for 4, exhale for 4.' },
-      { type: 'posture', message: 'Sit up straight. Roll your shoulders back and relax.' },
-      { type: 'stretch', message: 'Stand up and stretch for 30 seconds. Your body will thank you!' }
-    ];
-    setCurrentNudge(defaultNudges[Math.floor(Math.random() * defaultNudges.length)]);
-  }
+// Local nudges only; the Gemini micro-nudge endpoint lived on the retired Express server
+const fetchPersonalizedNudge = () => {
+  const defaultNudges: NudgeData[] = [
+    { type: 'breathing', message: 'Take a deep breath. Inhale for 4, hold for 4, exhale for 4.' },
+    { type: 'posture', message: 'Sit up straight. Roll your shoulders back and relax.' },
+    { type: 'stretch', message: 'Stand up and stretch for 30 seconds. Your body will thank you!' }
+  ];
+  setCurrentNudge(defaultNudges[Math.floor(Math.random() * defaultNudges.length)]);
 };
   
   // Setup WebSocket connection and frame sending

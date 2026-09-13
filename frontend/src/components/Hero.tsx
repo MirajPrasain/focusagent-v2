@@ -1,13 +1,11 @@
-import React from 'react';
 import { Play, Sparkles } from 'lucide-react';
-import {useState} from "react"; 
 import {useNavigate} from "react-router-dom";
 
 const Hero = () => {
   const navigate = useNavigate();
-  
+
   const handleStartStudy = () => {
-    navigate(`/roadmap`);
+    navigate(`/pre-session`);
   };
 
   return (
