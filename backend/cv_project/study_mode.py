@@ -1,7 +1,6 @@
 import cv2
 import mediapipe as mp
 import numpy as np
-from ultralytics import YOLO
 import time
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -20,10 +19,7 @@ face_mesh = mp_face_mesh.FaceMesh(
     min_tracking_confidence=0.5
 )
 
-# --- Initialize Model ---
-model = YOLO('yolov5su.pt')
-
-# --- Global session state --- same variables as the py file 
+# --- Global session state --- same variables as the py file
 focus_scores = []
 cheat_times = []
 blink_counter = 0
@@ -31,11 +27,9 @@ start_time = time.time()
 SESSION_DURATION = 30  # seconds
 
 cheat_event = []
-phone_checks = 0
 face_events = 0
 turn_events = 0
 down_events = 0
-phone_flag = False
 face_flag = False
 turn_flag = False
 down_flag = False
@@ -80,7 +74,7 @@ def head_down_ratio(nose_tip, chin, eye_level):
     return eye_to_nose / chin_to_nose
 
 # --- Focus Score Function ---
-def get_focus_score(results, w, h, phone_detected): #same logic as py file 
+def get_focus_score(results, w, h): #same logic as py file
     global blink_counter  # so we can retain value across frames
 
     if not results.multi_face_landmarks:
@@ -131,31 +125,8 @@ def get_focus_score(results, w, h, phone_detected): #same logic as py file
     else:
         blink_counter = 0
 
-    if phone_detected:
-        return 0, "Phone Detected"
-
     return max(0, focus), status
 
-
-# --- Detect Cheating Events ---
-def detect_phone(results_yolo):
-    global phone_checks, phone_flag
-    phone_detected = False
-    for box in results_yolo.boxes:
-        cls_id = int(box.cls[0])
-        conf = float(box.conf[0])
-        label = model.names[cls_id]
-        if label == 'cell phone' and conf > 0.5:
-            phone_detected = True
-            break
-    if phone_detected and not phone_flag:
-        phone_checks += 1
-        phone_flag = True
-        cheat_times.append(time.time() - start_time)
-        cheat_event.append(4)
-    elif not phone_detected:
-        phone_flag = False
-    return phone_detected
 
 def detect_multiple_faces(result):
     global face_events, face_flag
@@ -220,10 +191,6 @@ def process_frame(frame, timestamp=None):
     if timestamp > SESSION_DURATION:
         return "Session Ended"
 
-    # Phone Detection
-    results_yolo = model(frame)[0]
-    phone_detected = detect_phone(results_yolo)
-
     # Face Detection
     frame = cv2.flip(frame, 1) #this frame is sent by the backend after it received and decoded it from the front end
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -236,7 +203,7 @@ def process_frame(frame, timestamp=None):
     # Detect head pose issues
     detect_head_pose(result, w, h)
     
-    score, status = get_focus_score(result, w, h, phone_detected)
+    score, status = get_focus_score(result, w, h)
 
     # Always append the focus score to track trend over time
     focus_scores.append(score)
