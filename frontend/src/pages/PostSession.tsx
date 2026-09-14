@@ -1,8 +1,6 @@
 // @ts-ignore - JSX component without TypeScript definitions
 import FocusChart from '../report-comps/FocusChart';
 // @ts-ignore - JSX component without TypeScript definitions
-import CheatChart from '../report-comps/Cheat-Chart'; 
-// @ts-ignore - JSX component without TypeScript definitions
 import FocusDonutChart from '../report-comps/FocusDonutChart';
 import StudyDebrief from '../components/StudyDebrief';
 import { Brain, TrendingUp } from 'lucide-react';
@@ -58,9 +56,6 @@ const PostSession = () => {
         <div className="space-y-0">
           <div className="animate-fade-in-up" style={{ animationDelay: '0.2s', animationFillMode: 'both' }}>
             <FocusChart />
-          </div>
-          <div className="animate-fade-in-up" style={{ animationDelay: '0.4s', animationFillMode: 'both' }}>
-            <CheatChart />
           </div>
           <div className="animate-fade-in-up" style={{ animationDelay: '0.6s', animationFillMode: 'both' }}>
             <FocusDonutChart />

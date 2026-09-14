@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from cv_project.study_mode import get_focus_data, get_cheat_data, get_session_duration
+from cv_project.study_mode import get_focus_data, get_session_duration
 
 router = APIRouter()
 
@@ -40,28 +40,6 @@ async def get_summary_data(chart_type: str):
             "session_duration": session_duration,
         }
     
-    elif chart_type == "cheat": 
-        cheat_times, cheat_events = get_cheat_data()
-
-        # Defensive fallback if cheat_times or cheat_events are missing
-        if not cheat_times or not cheat_events:
-            print("⚠️ No cheat data found. Returning empty chart.")
-            return {
-                "chart_data": [],
-                "session_duration": session_duration
-            }
-
-        # Create chart-friendly format (time + label)
-        chart_data = [
-            {"time": round(cheat_times[i], 2), "event": cheat_events[i]}
-            for i in range(min(len(cheat_times), len(cheat_events)))
-        ]
-
-        return {
-            "chart_data": chart_data,
-            "session_duration": session_duration
-        }
-    
     elif chart_type == "focus-donut":
         focus_scores = get_focus_data()
 
@@ -76,7 +54,7 @@ async def get_summary_data(chart_type: str):
     else:
         # Invalid chart_type
         return {
-            "error": f"Invalid chart_type: {chart_type}. Must be 'focus', 'cheat', or 'circle'",
+            "error": f"Invalid chart_type: {chart_type}. Must be 'focus' or 'focus-donut'",
             "chart_data": [],
             "session_duration": session_duration
         }
