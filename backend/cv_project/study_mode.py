@@ -16,15 +16,10 @@ face_mesh = mp_face_mesh.FaceMesh(
 
 # --- Global session state --- same variables as the py file
 focus_scores = []
-cheat_times = []
 blink_counter = 0
 start_time = time.time()
 SESSION_DURATION = 30  # seconds
 
-cheat_event = []
-face_events = 0
-turn_events = 0
-down_events = 0
 face_flag = False
 turn_flag = False
 down_flag = False
@@ -124,19 +119,16 @@ def get_focus_score(results, w, h): #same logic as py file
 
 
 def detect_multiple_faces(result):
-    global face_events, face_flag
+    global face_flag
     multi_face = bool(result.multi_face_landmarks and len(result.multi_face_landmarks) > 1)
     if multi_face and not face_flag:
-        face_events += 1
         face_flag = True
-        cheat_times.append(time.time() - start_time)
-        cheat_event.append(3)
     elif not multi_face:
         face_flag = False
     return multi_face
 
 def detect_head_pose(result, w, h):
-    global turn_events, down_events, turn_flag, down_flag
+    global turn_flag, down_flag
     if not result.multi_face_landmarks:
         return False, False
     face = result.multi_face_landmarks[0]
@@ -153,20 +145,14 @@ def detect_head_pose(result, w, h):
     # Check for extreme turn (head tilt)
     extreme_turn = (tilt > 1.5) or (tilt < 0.67)
     if extreme_turn and not turn_flag:
-        turn_events += 1
         turn_flag = True
-        cheat_times.append(time.time() - start_time)
-        cheat_event.append(2)
     elif not extreme_turn:
         turn_flag = False
     
     # Check for looking down (head down)
     looking_down = down > 1.4
     if looking_down and not down_flag:
-        down_events += 1
         down_flag = True
-        cheat_times.append(time.time() - start_time)
-        cheat_event.append(1)
     elif not looking_down:
         down_flag = False
     
@@ -177,7 +163,7 @@ def detect_head_pose(result, w, h):
 
 # --- Frame Processing (called from WebSocket) ---
 def process_frame(frame, timestamp=None):
-    global focus_scores, cheat_times, cheat_event
+    global focus_scores
 
     # Use provided timestamp or calculate from start_time
     if timestamp is None:
@@ -202,12 +188,6 @@ def process_frame(frame, timestamp=None):
 
     # Always append the focus score to track trend over time
     focus_scores.append(score)
-
-    # Track cheating/distraction events separately
-    if score < 40:
-        cheat_times.append(round(timestamp, 2))
-        cheat_event.append(5)  # Event type 5 for general low focus/distraction
-        print(f"🚨 Cheat detected at {timestamp:.2f}s - Score: {score}, Status: {status}")
 
     current_events = []
     if multi_face:
@@ -235,9 +215,3 @@ def get_focus_data():
     global focus_scores
 
     return focus_scores
-
-def get_cheat_data(): 
-    global cheat_times 
-    global cheat_event
-
-    return cheat_times, cheat_event
