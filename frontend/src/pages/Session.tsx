@@ -3,7 +3,8 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import { Square, RotateCcw } from 'lucide-react';
 import FocusAgentMessage from '../components/FocusAgentMessage'
 import MicroNudge from '../components/MicroNudge'
-import axios from "axios"; 
+import axios from "axios";
+import { detectFaces } from '../lib/faceLandmarker'
 
 type VibeType = 'calm' | 'beast' | 'gamified';
 
@@ -88,6 +89,56 @@ function Session() {
         console.error("Camera access error:", err);
         setStatus("Camera access denied");
       });
+  }, []);
+
+  // TEMP: browser-side MediaPipe FaceLandmarker console test (not wired into scoring/websocket)
+  useEffect(() => {
+    // Same indices backend/cv_project/study_mode.py uses for scoring
+    const LANDMARK_INDICES = [159, 145, 33, 133, 468, 1, 234, 454, 152, 151];
+    let busy = false;
+    let lastTimestamp = -1;
+
+    const interval = setInterval(async () => {
+      const video = videoRef.current;
+      if (busy || !video || video.readyState < 2 || video.videoWidth === 0) return;
+
+      const timestamp = performance.now();
+      if (timestamp <= lastTimestamp) return;
+      lastTimestamp = timestamp;
+
+      busy = true;
+      try {
+        const result = await detectFaces(video, timestamp);
+        const w = video.videoWidth;
+        const h = video.videoHeight;
+
+        console.group(`🧪 [FaceLandmarker] faces detected: ${result.faceLandmarks.length}`);
+
+        const face = result.faceLandmarks[0];
+        if (face) {
+          // Normalized x,y plus pixel coords computed the same way as study_mode.py's get_point()
+          console.table(
+            LANDMARK_INDICES.map((idx) => ({
+              index: idx,
+              x: face[idx]?.x,
+              y: face[idx]?.y,
+              px: face[idx] ? Math.trunc(face[idx].x * w) : undefined,
+              py: face[idx] ? Math.trunc(face[idx].y * h) : undefined,
+            }))
+          );
+        }
+
+        console.log('faceBlendshapes:', result.faceBlendshapes);
+        console.log('facialTransformationMatrixes:', result.facialTransformationMatrixes);
+        console.groupEnd();
+      } catch (err) {
+        console.error('🧪 [FaceLandmarker] detection error:', err);
+      } finally {
+        busy = false;
+      }
+    }, 200);
+
+    return () => clearInterval(interval);
   }, []);
 
   // Session timer and progress
