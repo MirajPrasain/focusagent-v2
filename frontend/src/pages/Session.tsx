@@ -6,6 +6,9 @@ import MicroNudge from '../components/MicroNudge'
 import axios from "axios";
 import { detectFaces } from '../lib/faceLandmarker'
 
+// Set to true to re-enable websocket/TTS/session console logs (FaceLandmarker test logs are unaffected)
+const DEBUG_LOGS = false;
+
 type VibeType = 'calm' | 'beast' | 'gamified';
 
 interface DistractionEvent {
@@ -93,10 +96,13 @@ function Session() {
 
   // TEMP: browser-side MediaPipe FaceLandmarker console test (not wired into scoring/websocket)
   useEffect(() => {
+    // Detection still runs every 200ms; console output is throttled for readability
+    const LOG_INTERVAL_MS = 1000;
     // Same indices backend/cv_project/study_mode.py uses for scoring
     const LANDMARK_INDICES = [159, 145, 33, 133, 468, 1, 234, 454, 152, 151];
     let busy = false;
     let lastTimestamp = -1;
+    let lastLogTime = -Infinity;
 
     const interval = setInterval(async () => {
       const video = videoRef.current;
@@ -109,26 +115,51 @@ function Session() {
       busy = true;
       try {
         const result = await detectFaces(video, timestamp);
-        const w = video.videoWidth;
-        const h = video.videoHeight;
+
+        // Send pixel-space landmarks as a separate text message on the study websocket (logged only on backend for now)
+        const socket = socketRef.current;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          const w = video.videoWidth;
+          const h = video.videoHeight;
+          const face = result.faceLandmarks[0];
+          const points: Record<string, [number, number]> = {};
+          if (face) {
+            for (const idx of LANDMARK_INDICES) {
+              const lm = face[idx];
+              if (lm) points[idx] = [Math.trunc(lm.x * w), Math.trunc(lm.y * h)];
+            }
+          }
+          socket.send(JSON.stringify({ type: 'landmarks', faceCount: result.faceLandmarks.length, points }));
+        }
+
+        if (timestamp - lastLogTime < LOG_INTERVAL_MS) return;
+        lastLogTime = timestamp;
 
         console.group(`🧪 [FaceLandmarker] faces detected: ${result.faceLandmarks.length}`);
 
         const face = result.faceLandmarks[0];
         if (face) {
-          // Normalized x,y plus pixel coords computed the same way as study_mode.py's get_point()
-          console.table(
-            LANDMARK_INDICES.map((idx) => ({
-              index: idx,
-              x: face[idx]?.x,
-              y: face[idx]?.y,
-              px: face[idx] ? Math.trunc(face[idx].x * w) : undefined,
-              py: face[idx] ? Math.trunc(face[idx].y * h) : undefined,
-            }))
-          );
+          // Horizontal nose-to-temple distances: 234 = left temple, 1 = nose, 454 = right temple
+          const leftDist = Math.abs(face[234].x - face[1].x);
+          const rightDist = Math.abs(face[454].x - face[1].x);
+          const headTurnRatio = leftDist / rightDist;
+          console.log(`Head turn ratio: ${headTurnRatio.toFixed(2)} (near 1.0 = facing forward, higher = turned right, lower = turned left)`);
         }
 
-        console.log('faceBlendshapes:', result.faceBlendshapes);
+        const blendshapes = result.faceBlendshapes[0]?.categories;
+        if (blendshapes) {
+          const score = (name: string) => blendshapes.find((c) => c.categoryName === name)?.score ?? 0;
+          const blinkL = score('eyeBlinkLeft');
+          const blinkR = score('eyeBlinkRight');
+          const up = score('eyeLookUpLeft');
+          const down = score('eyeLookDownLeft');
+          const in_ = score('eyeLookInLeft');
+          const out = score('eyeLookOutLeft');
+          const smileL = score('mouthSmileLeft');
+          const smileR = score('mouthSmileRight');
+          console.log(`Blink: L=${blinkL.toFixed(2)} R=${blinkR.toFixed(2)} | Gaze: up=${up.toFixed(2)} down=${down.toFixed(2)} in=${in_.toFixed(2)} out=${out.toFixed(2)} | Smile: L=${smileL.toFixed(2)} R=${smileR.toFixed(2)}`);
+        }
+
         console.log('facialTransformationMatrixes:', result.facialTransformationMatrixes);
         console.groupEnd();
       } catch (err) {
@@ -177,7 +208,7 @@ useEffect(() => {
     const timeout = setTimeout(async () => {
       const minutesPassed = Math.floor((Date.now() - sessionStart) / 60000);
 
-      console.log(`⏰ Triggering AI message at ~${minutesPassed} min`);
+      if (DEBUG_LOGS) console.log(`⏰ Triggering AI message at ~${minutesPassed} min`);
 
       try {
         const aiRes = await axios.get(`${MEDIAPIPE_API_URL}/ai-messages`, {
@@ -206,10 +237,10 @@ useEffect(() => {
 
 // TTS using backend API
 useEffect(() => {
-  console.log("📣 TTS useEffect triggered");
+  if (DEBUG_LOGS) console.log("📣 TTS useEffect triggered");
   
   if (!aiMessage || hasPlayed.current) {
-    console.log("⏸ Skipping TTS:", { aiMessage, hasPlayed: hasPlayed.current });
+    if (DEBUG_LOGS) console.log("⏸ Skipping TTS:", { aiMessage, hasPlayed: hasPlayed.current });
     return;
   }
 
@@ -217,7 +248,7 @@ useEffect(() => {
 
   const playTTS = async () => {
     try {
-      console.log("🎵 Calling backend TTS API...");
+      if (DEBUG_LOGS) console.log("🎵 Calling backend TTS API...");
       
       const response = await axios.post(`${MEDIAPIPE_API_URL}/session/api/tts`, {
         text: cleanText,
@@ -236,7 +267,7 @@ useEffect(() => {
 
       audio.onended = () => {
         URL.revokeObjectURL(audioUrl);
-        console.log("🎵 Audio playback completed");
+        if (DEBUG_LOGS) console.log("🎵 Audio playback completed");
       };
 
       audio.onerror = (err) => {
@@ -246,7 +277,7 @@ useEffect(() => {
 
       await audio.play();
       hasPlayed.current = true;
-      console.log("🎵 TTS audio played successfully");
+      if (DEBUG_LOGS) console.log("🎵 TTS audio played successfully");
       
     } catch (err) {
       console.error("🛑 Backend TTS error:", err);
@@ -300,16 +331,16 @@ const fetchPersonalizedNudge = () => {
   
   // Setup WebSocket connection and frame sending
   useEffect(() => {
-    console.log('🔌 Attempting to connect to MediaPipe backend:', MEDIAPIPE_API_URL);
+    if (DEBUG_LOGS) console.log('🔌 Attempting to connect to MediaPipe backend:', MEDIAPIPE_API_URL);
     const protocol = MEDIAPIPE_API_URL.startsWith('https://') ? 'wss://' : 'ws://';
     const wsUrl = `${protocol}${MEDIAPIPE_API_URL.replace('http://', '').replace('https://', '')}/ws/study`;
-    console.log('🔌 WebSocket URL:', wsUrl);
+    if (DEBUG_LOGS) console.log('🔌 WebSocket URL:', wsUrl);
     
     const socket = new WebSocket(wsUrl);
     socketRef.current = socket;
 
     socket.onopen = () => {
-      console.log("✅ Connected to backend Study WebSocket server");
+      if (DEBUG_LOGS) console.log("✅ Connected to backend Study WebSocket server");
       socket.send(JSON.stringify({ duration }));
       setStatus("Connected");
       setBackendConnected(true);
@@ -343,7 +374,7 @@ const fetchPersonalizedNudge = () => {
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        console.log('📊 Received from backend:', data);
+        if (DEBUG_LOGS) console.log('📊 Received from backend:', data);
 
         if (data.error) {
           const errorMessages: Record<string, string> = {
@@ -360,16 +391,16 @@ const fetchPersonalizedNudge = () => {
         const cheatEvents = data.cheat_events;
 
         // Debug logging
-        console.log('Focus Score received:', score, 'Type:', typeof score);
+        if (DEBUG_LOGS) console.log('Focus Score received:', score, 'Type:', typeof score);
         
         // Handle score
         if (typeof score === 'number') {
           setFocusScore(score);
           if (score === 0) {
-            console.warn('⚠️ Score is 0 - Check if face is visible and well-lit');
+            if (DEBUG_LOGS) console.warn('⚠️ Score is 0 - Check if face is visible and well-lit');
           }
         } else {
-          console.warn('⚠️ No score in response:', data);
+          if (DEBUG_LOGS) console.warn('⚠️ No score in response:', data);
           setFocusScore(null);
         }
         
@@ -395,7 +426,7 @@ const fetchPersonalizedNudge = () => {
     };
 
     socket.onclose = (event) => {
-      console.log("🔌 WebSocket connection closed. Code:", event.code, "Reason:", event.reason);
+      if (DEBUG_LOGS) console.log("🔌 WebSocket connection closed. Code:", event.code, "Reason:", event.reason);
       setStatus("Disconnected - Backend may not be running");
       setBackendConnected(false);
     };
@@ -407,7 +438,7 @@ const fetchPersonalizedNudge = () => {
   }, [duration, MEDIAPIPE_API_URL]);
 
 const handleEndSession = () => {
-    console.log("🚀 Ending Study Session...");
+    if (DEBUG_LOGS) console.log("🚀 Ending Study Session...");
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.close();
