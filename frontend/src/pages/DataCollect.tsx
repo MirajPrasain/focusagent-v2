@@ -51,10 +51,11 @@ export default function DataCollect() {
     return () => stream?.getTracks().forEach((t) => t.stop());
   }, []);
 
-  // Keyboard: 1 = focused, 2 = distracted
+  // Keyboard: 0 = unlabeled (paused), 1 = focused, 2 = distracted
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === '1') setLabel('focused');
+      if (e.key === '0') setLabel('unlabeled');
+      else if (e.key === '1') setLabel('focused');
       else if (e.key === '2') setLabel('distracted');
     };
     window.addEventListener('keydown', onKey);
@@ -121,12 +122,15 @@ export default function DataCollect() {
     <div className="min-h-screen p-6 flex flex-col items-center gap-4">
       <h1 className="text-xl font-semibold">Data Collection (dev tool)</h1>
       <p className="text-sm text-gray-400">
-        Press <kbd className="px-1 bg-gray-700 rounded">1</kbd> = focused,{' '}
+        Press <kbd className="px-1 bg-gray-700 rounded">0</kbd> = pause,{' '}
+        <kbd className="px-1 bg-gray-700 rounded">1</kbd> = focused,{' '}
         <kbd className="px-1 bg-gray-700 rounded">2</kbd> = distracted · {status} ·{' '}
         {faceDetected ? 'Face detected' : 'No face'}
       </p>
 
-      <div className={`text-6xl font-bold uppercase ${LABEL_COLORS[label]}`}>{label}</div>
+      <div className={`text-6xl font-bold uppercase ${LABEL_COLORS[label]}`}>
+        {label === 'unlabeled' ? 'paused' : label}
+      </div>
 
       <video
         ref={videoRef}
