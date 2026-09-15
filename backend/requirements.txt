@@ -10,12 +10,6 @@ opencv-python-headless==4.8.1.78
 mediapipe==0.10.14
 numpy>=1.26.0,<1.27.0
 
-# HTTP Client
-httpx==0.28.1
-
-# AI and Language Models
-google-generativeai==0.3.2
-
 # WebSocket Support (included with FastAPI/uvicorn)
 websockets==15.0.1
 

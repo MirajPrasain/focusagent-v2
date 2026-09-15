@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from ws_routes import study_ws, charts, messages, tts
+from ws_routes import study_ws, charts
 
 # Load environment variables from .env file
 load_dotenv()
@@ -21,9 +21,6 @@ app.include_router(study_ws.router)
 
 # Include charts router
 app.include_router(charts.router)
-
-app.include_router(messages.router)
-app.include_router(tts.router)
 
 
 @app.get("/")
