@@ -1,9 +1,7 @@
 import { useRef, useState, useEffect } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { Square, RotateCcw } from 'lucide-react';
-import FocusAgentMessage from '../components/FocusAgentMessage'
 import MicroNudge from '../components/MicroNudge'
-import axios from "axios";
 import { detectFaces } from '../lib/faceLandmarker'
 
 // Set to true to re-enable websocket/TTS/session console logs (FaceLandmarker test logs are unaffected)
@@ -41,7 +39,6 @@ function Session() {
   const [backendConnected, setBackendConnected] = useState(false);
   const navigate = useNavigate();
 
-  const [aiMessage, setAiMessage] = useState("")
   const [currentNudge, setCurrentNudge] = useState<NudgeData | null>(null);
   const [distractionHistory, setDistractionHistory] = useState<DistractionEvent[]>([]);
   const [recentDistractions, setRecentDistractions] = useState(0);
@@ -196,105 +193,7 @@ function Session() {
     return () => clearInterval(timer);
   }, [duration]);
   
-const hasPlayed = useRef(false);
 const sessionStartTime = useRef(Date.now());
-  
-useEffect(() => {
-  const segments = 4;
-  const triggerCount = segments + 1;
-  const sessionStart = Date.now();
-  const triggerTimeouts: NodeJS.Timeout[] = [];
-
-  for (let i = 0; i < triggerCount; i++) {
-    const triggerMs = (i * duration * 60000) / segments;
-
-    const timeout = setTimeout(async () => {
-      const minutesPassed = Math.floor((Date.now() - sessionStart) / 60000);
-
-      if (DEBUG_LOGS) console.log(`⏰ Triggering AI message at ~${minutesPassed} min`);
-
-      try {
-        const aiRes = await axios.get(`${MEDIAPIPE_API_URL}/ai-messages`, {
-          params: {
-            duration,
-            vibe,
-            minute: minutesPassed,
-            cheat_count: 0,
-          }
-        });
-
-        setAiMessage(aiRes.data.message || " ");
-        hasPlayed.current = false;
-      } catch (err) {
-        console.error("❌ Failed to fetch AI message:", err);
-      }
-    }, triggerMs);
-
-    triggerTimeouts.push(timeout);
-  }
-
-  return () => {
-    triggerTimeouts.forEach(clearTimeout);
-  };
-}, [duration, vibe, MEDIAPIPE_API_URL]);
-
-// TTS using backend API
-useEffect(() => {
-  if (DEBUG_LOGS) console.log("📣 TTS useEffect triggered");
-  
-  if (!aiMessage || hasPlayed.current) {
-    if (DEBUG_LOGS) console.log("⏸ Skipping TTS:", { aiMessage, hasPlayed: hasPlayed.current });
-    return;
-  }
-
-  const cleanText = aiMessage.replace(/[*_`~>#]/g, '').trim();
-
-  const playTTS = async () => {
-    try {
-      if (DEBUG_LOGS) console.log("🎵 Calling backend TTS API...");
-      
-      const response = await axios.post(`${MEDIAPIPE_API_URL}/session/api/tts`, {
-        text: cleanText,
-        vibe: vibe
-      }, {
-        responseType: 'blob', // Important: Tell axios to expect binary data
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
-
-      // Create audio from blob response
-      const audioBlob = response.data;
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-
-      audio.onended = () => {
-        URL.revokeObjectURL(audioUrl);
-        if (DEBUG_LOGS) console.log("🎵 Audio playback completed");
-      };
-
-      audio.onerror = (err) => {
-        URL.revokeObjectURL(audioUrl);
-        console.error("🛑 Audio playback error:", err);
-      };
-
-      await audio.play();
-      hasPlayed.current = true;
-      if (DEBUG_LOGS) console.log("🎵 TTS audio played successfully");
-      
-    } catch (err) {
-      console.error("🛑 Backend TTS error:", err);
-      
-      // Log more details about the error
-      if (axios.isAxiosError(err) && err.response) {
-        console.error("Response status:", err.response.status);
-        console.error("Response data:", err.response.data);
-      }
-    }
-  };
-
-  playTTS();
-}, [aiMessage, vibe, MEDIAPIPE_API_URL]);
 
 // Track distractions and trigger micro-nudges
 useEffect(() => {
@@ -584,8 +483,6 @@ const handleEndSession = () => {
               </div>
             </div>
           )}
-          
-          <FocusAgentMessage message={aiMessage} vibe={vibe} />
         </div>
       </div>
 

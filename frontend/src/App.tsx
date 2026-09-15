@@ -9,7 +9,6 @@ import Footer from './components/Footer';
 import PreSession from './pages/PreSession';
 import Session from './pages/Session'; 
 import PostSession from './pages/PostSession'; 
-import Roadmap from './pages/Roadmap';
 import DataCollect from './pages/DataCollect';
 
 
@@ -33,7 +32,6 @@ function App() {
           }
         />
         <Route path="/pre-session" element={<PreSession />} />
-        <Route path="/roadmap" element={<Roadmap />} />
         <Route path= "/session" element={<Session />} /> 
         <Route path="/post-session" element={<PostSession />} />
         {/* Dev-only data collection tool; intentionally not linked in nav */}
