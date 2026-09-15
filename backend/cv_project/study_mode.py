@@ -16,13 +16,20 @@ face_mesh = mp_face_mesh.FaceMesh(
 
 # --- Global session state --- same variables as the py file
 focus_scores = []
-blink_counter = 0
 start_time = time.time()
 SESSION_DURATION = 30  # seconds
 
-face_flag = False
-turn_flag = False
-down_flag = False
+# Landmark indices the scoring functions use
+LANDMARK_INDICES = (159, 145, 33, 133, 468, 1, 234, 454, 152, 151)
+
+
+def new_scoring_state():
+    """Per-source state (blink streak + event flags), so different landmark sources don't share counters."""
+    return {"blink_counter": 0, "face_flag": False, "turn_flag": False, "down_flag": False}
+
+
+# State for the video/JPEG path (module-wide, as before)
+video_state = new_scoring_state()
 
 
 def set_session_duration(seconds): 
@@ -63,30 +70,40 @@ def head_down_ratio(nose_tip, chin, eye_level):
     chin_to_nose = euclidean(nose_tip, chin)
     return eye_to_nose / chin_to_nose
 
-# --- Focus Score Function ---
-def get_focus_score(results, w, h): #same logic as py file
-    global blink_counter  # so we can retain value across frames
-
+# --- Adapter: mediapipe results -> plain landmarks dict ---
+def landmarks_from_results(results, w, h):
+    """Returns ({idx: (x, y)} in pixel space for LANDMARK_INDICES of the first face, face_count)."""
     if not results.multi_face_landmarks:
-        return 0, "No face detected"
+        return {}, 0
 
-    face = results.multi_face_landmarks[0]
-    landmarks = face.landmark
+    landmarks = results.multi_face_landmarks[0].landmark
 
     def get_point(idx):
         lm = landmarks[idx]
         return int(lm.x * w), int(lm.y * h)
 
-    eye_top = get_point(159)
-    eye_bottom = get_point(145)
-    eye_left = get_point(33)
-    eye_right = get_point(133)
-    iris_center = get_point(468)
-    nose_tip = get_point(1)
-    left_temple = get_point(234)
-    right_temple = get_point(454)
-    chin = get_point(152)
-    eye_level = get_point(151)
+    return {idx: get_point(idx) for idx in LANDMARK_INDICES}, len(results.multi_face_landmarks)
+
+
+def has_all_landmarks(landmarks):
+    return all(idx in landmarks for idx in LANDMARK_INDICES)
+
+
+# --- Focus Score Function ---
+def get_focus_score(landmarks, state): #same logic as py file
+    if not has_all_landmarks(landmarks):
+        return 0, "No face detected"
+
+    eye_top = landmarks[159]
+    eye_bottom = landmarks[145]
+    eye_left = landmarks[33]
+    eye_right = landmarks[133]
+    iris_center = landmarks[468]
+    nose_tip = landmarks[1]
+    left_temple = landmarks[234]
+    right_temple = landmarks[454]
+    chin = landmarks[152]
+    eye_level = landmarks[151]
 
     eye_aspect_ratio = eye_openness(eye_top, eye_bottom, eye_left, eye_right)
     iris_horizontal, iris_vertical = iris_position_ratio(iris_center, eye_left, eye_right, eye_top, eye_bottom)
@@ -109,53 +126,48 @@ def get_focus_score(results, w, h): #same logic as py file
 
     # Blink detection
     if eye_aspect_ratio < 0.2:
-        blink_counter += 1
-        if blink_counter >= 3:
+        state["blink_counter"] += 1
+        if state["blink_counter"] >= 3:
             return 0, "Eyes Closed"
     else:
-        blink_counter = 0
+        state["blink_counter"] = 0
 
     return max(0, focus), status
 
 
-def detect_multiple_faces(result):
-    global face_flag
-    multi_face = bool(result.multi_face_landmarks and len(result.multi_face_landmarks) > 1)
-    if multi_face and not face_flag:
-        face_flag = True
+def detect_multiple_faces(face_count, state):
+    multi_face = face_count > 1
+    if multi_face and not state["face_flag"]:
+        state["face_flag"] = True
     elif not multi_face:
-        face_flag = False
+        state["face_flag"] = False
     return multi_face
 
-def detect_head_pose(result, w, h):
-    global turn_flag, down_flag
-    if not result.multi_face_landmarks:
+def detect_head_pose(landmarks, state):
+    if not has_all_landmarks(landmarks):
         return False, False
-    face = result.multi_face_landmarks[0]
-    lm = face.landmark
-    def P(i): return (int(lm[i].x * w), int(lm[i].y * h))
-    nose = P(1)
-    left_temple = P(234)
-    right_temple = P(454)
-    chin = P(152)
-    eye_lvl = P(151)
+    nose = landmarks[1]
+    left_temple = landmarks[234]
+    right_temple = landmarks[454]
+    chin = landmarks[152]
+    eye_lvl = landmarks[151]
     tilt = head_tilt_ratio(left_temple, right_temple, nose)
     down = head_down_ratio(nose, chin, eye_lvl)
-    
+
     # Check for extreme turn (head tilt)
     extreme_turn = (tilt > 1.5) or (tilt < 0.67)
-    if extreme_turn and not turn_flag:
-        turn_flag = True
+    if extreme_turn and not state["turn_flag"]:
+        state["turn_flag"] = True
     elif not extreme_turn:
-        turn_flag = False
-    
+        state["turn_flag"] = False
+
     # Check for looking down (head down)
     looking_down = down > 1.4
-    if looking_down and not down_flag:
-        down_flag = True
+    if looking_down and not state["down_flag"]:
+        state["down_flag"] = True
     elif not looking_down:
-        down_flag = False
-    
+        state["down_flag"] = False
+
     return extreme_turn, looking_down
 
 
@@ -178,13 +190,15 @@ def process_frame(frame, timestamp=None):
     result = face_mesh.process(rgb_frame)
     h, w, _ = frame.shape
     
+    landmarks, face_count = landmarks_from_results(result, w, h)
+
     # Detect multiple faces
-    multi_face = detect_multiple_faces(result)
+    multi_face = detect_multiple_faces(face_count, video_state)
 
     # Detect head pose issues
-    extreme_turn, looking_down = detect_head_pose(result, w, h)
+    extreme_turn, looking_down = detect_head_pose(landmarks, video_state)
 
-    score, status = get_focus_score(result, w, h)
+    score, status = get_focus_score(landmarks, video_state)
 
     # Always append the focus score to track trend over time
     focus_scores.append(score)

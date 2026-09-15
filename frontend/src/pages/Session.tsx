@@ -132,36 +132,39 @@ function Session() {
           socket.send(JSON.stringify({ type: 'landmarks', faceCount: result.faceLandmarks.length, points }));
         }
 
-        if (timestamp - lastLogTime < LOG_INTERVAL_MS) return;
-        lastLogTime = timestamp;
+        // Debug console output only in local dev; silent in production builds
+        if (import.meta.env.DEV) {
+          if (timestamp - lastLogTime < LOG_INTERVAL_MS) return;
+          lastLogTime = timestamp;
 
-        console.group(`🧪 [FaceLandmarker] faces detected: ${result.faceLandmarks.length}`);
+          console.group(`🧪 [FaceLandmarker] faces detected: ${result.faceLandmarks.length}`);
 
-        const face = result.faceLandmarks[0];
-        if (face) {
-          // Horizontal nose-to-temple distances: 234 = left temple, 1 = nose, 454 = right temple
-          const leftDist = Math.abs(face[234].x - face[1].x);
-          const rightDist = Math.abs(face[454].x - face[1].x);
-          const headTurnRatio = leftDist / rightDist;
-          console.log(`Head turn ratio: ${headTurnRatio.toFixed(2)} (near 1.0 = facing forward, higher = turned right, lower = turned left)`);
+          const face = result.faceLandmarks[0];
+          if (face) {
+            // Horizontal nose-to-temple distances: 234 = left temple, 1 = nose, 454 = right temple
+            const leftDist = Math.abs(face[234].x - face[1].x);
+            const rightDist = Math.abs(face[454].x - face[1].x);
+            const headTurnRatio = leftDist / rightDist;
+            console.log(`Head turn ratio: ${headTurnRatio.toFixed(2)} (near 1.0 = facing forward, higher = turned right, lower = turned left)`);
+          }
+
+          const blendshapes = result.faceBlendshapes[0]?.categories;
+          if (blendshapes) {
+            const score = (name: string) => blendshapes.find((c) => c.categoryName === name)?.score ?? 0;
+            const blinkL = score('eyeBlinkLeft');
+            const blinkR = score('eyeBlinkRight');
+            const up = score('eyeLookUpLeft');
+            const down = score('eyeLookDownLeft');
+            const in_ = score('eyeLookInLeft');
+            const out = score('eyeLookOutLeft');
+            const smileL = score('mouthSmileLeft');
+            const smileR = score('mouthSmileRight');
+            console.log(`Blink: L=${blinkL.toFixed(2)} R=${blinkR.toFixed(2)} | Gaze: up=${up.toFixed(2)} down=${down.toFixed(2)} in=${in_.toFixed(2)} out=${out.toFixed(2)} | Smile: L=${smileL.toFixed(2)} R=${smileR.toFixed(2)}`);
+          }
+
+          console.log('facialTransformationMatrixes:', result.facialTransformationMatrixes);
+          console.groupEnd();
         }
-
-        const blendshapes = result.faceBlendshapes[0]?.categories;
-        if (blendshapes) {
-          const score = (name: string) => blendshapes.find((c) => c.categoryName === name)?.score ?? 0;
-          const blinkL = score('eyeBlinkLeft');
-          const blinkR = score('eyeBlinkRight');
-          const up = score('eyeLookUpLeft');
-          const down = score('eyeLookDownLeft');
-          const in_ = score('eyeLookInLeft');
-          const out = score('eyeLookOutLeft');
-          const smileL = score('mouthSmileLeft');
-          const smileR = score('mouthSmileRight');
-          console.log(`Blink: L=${blinkL.toFixed(2)} R=${blinkR.toFixed(2)} | Gaze: up=${up.toFixed(2)} down=${down.toFixed(2)} in=${in_.toFixed(2)} out=${out.toFixed(2)} | Smile: L=${smileL.toFixed(2)} R=${smileR.toFixed(2)}`);
-        }
-
-        console.log('facialTransformationMatrixes:', result.facialTransformationMatrixes);
-        console.groupEnd();
       } catch (err) {
         console.error('🧪 [FaceLandmarker] detection error:', err);
       } finally {

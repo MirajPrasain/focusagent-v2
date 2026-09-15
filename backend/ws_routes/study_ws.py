@@ -10,6 +10,7 @@ import time
 
 from cv_project.study_mode import process_frame
 from cv_project.study_mode import set_session_duration
+from cv_project.study_mode import get_focus_score, new_scoring_state
 
 
 
@@ -103,7 +104,13 @@ async def study_session_handling(websocket: WebSocket):
     
     # Initialize frame_count to prevent UnboundLocalError
     frame_count = 0
-    
+
+    # Landmark-JSON scoring runs on its own state so it can't disturb the video path's blink counter
+    landmark_state = new_scoring_state()
+    latest_video_score = None
+    latest_landmark_score = None
+    last_compare_log = time.time()
+
     try:
         # Receive duration with error handling
         try:
@@ -135,7 +142,43 @@ async def study_session_handling(websocket: WebSocket):
         
         while True:
             try:
-                image_bytes = await websocket.receive_bytes()
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    raise WebSocketDisconnect(message.get("code", 1000))
+
+                # Log video vs landmark scores side by side, at most once per second
+                now = time.time()
+                if now - last_compare_log >= 1:
+                    if latest_video_score is not None and latest_landmark_score is not None:
+                        logger.info(
+                            f"t={now - session_start_time:.1f}s Video-score: {latest_video_score} | "
+                            f"Landmark-score: {latest_landmark_score} | "
+                            f"diff: {abs(latest_video_score - latest_landmark_score)}"
+                        )
+                    latest_video_score = None
+                    latest_landmark_score = None
+                    last_compare_log = now
+
+                # Text messages: browser-side landmark JSON, scored for comparison only (never sent to client)
+                if message.get("text") is not None:
+                    try:
+                        parsed_msg = json.loads(message["text"])
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Invalid landmark JSON: {e}")
+                        continue
+                    if parsed_msg.get("type") != "landmarks":
+                        logger.warning(f"Unknown text message: {parsed_msg}")
+                        continue
+                    try:
+                        points = {int(idx): tuple(xy) for idx, xy in (parsed_msg.get("points") or {}).items()}
+                        latest_landmark_score, _ = get_focus_score(points, landmark_state)
+                    except Exception as e:
+                        logger.warning(f"Landmark scoring failed: {e}")
+                    continue
+
+                image_bytes = message.get("bytes")
+                if image_bytes is None:
+                    continue
                 frame_count += 1
 
                 # Reset error count on successful frame
@@ -159,6 +202,10 @@ async def study_session_handling(websocket: WebSocket):
                 try:
                     result = process_frame(frame, current_timestamp)
                     await websocket.send_text(result)
+                    try:
+                        latest_video_score = json.loads(result)["score"]
+                    except (ValueError, KeyError, TypeError):
+                        pass  # e.g. "Session Ended"
                     logger.debug(f"Frame {frame_count}: Sent: {result}, Timestamp: {current_timestamp:.2f}s")
                 except Exception as e:
                     logger.error(f"Error processing frame {frame_count}: {e}")
