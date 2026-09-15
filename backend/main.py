@@ -1,10 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 from ws_routes import study_ws, charts
-
-# Load environment variables from .env file
-load_dotenv()
 
 app = FastAPI()
 
