@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Clock, Target, Headphones, ArrowRight, Brain } from 'lucide-react';
+import { Clock, Target, ArrowRight, Brain } from 'lucide-react';
 
 const PreSession = () => {
   const [sessionMin, setSessionMin] = useState("");
   const [goal, setGoal] = useState("");
-  const [vibe, setVibe] = useState("calm");
   const [currentStep, setCurrentStep] = useState(0);
 
   const navigate = useNavigate();
@@ -18,15 +17,9 @@ const PreSession = () => {
     }
 
     // Encode query params to avoid breaking URL
-    const encodedGoal = encodeURIComponent(goal); //this goal will be updated once user types via controlled input 
-    navigate(`/session?duration=${sessionMin}&goal=${encodedGoal}&vibe=${vibe}`);
+    const encodedGoal = encodeURIComponent(goal); //this goal will be updated once user types via controlled input
+    navigate(`/session?duration=${sessionMin}&goal=${encodedGoal}`);
   };
-
-  const vibeOptions = [
-    { value: "calm", label: "Calm Focus", icon: "🌊", description: "Gentle guidance for steady progress" },
-    { value: "beast", label: "Beast Mode", icon: "🔥", description: "High-energy motivation to push limits" },
-    { value: "gamified", label: "Gamified", icon: "🎮", description: "Points, levels, and achievements" }
-  ];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex items-center justify-center relative overflow-hidden">
@@ -104,54 +97,6 @@ const PreSession = () => {
               </div>
             </div>
 
-            {/* Question 3: Vibe Mode */}
-            <div className="group">
-              <div className="bg-gray-800/50 backdrop-blur-sm border border-gray-700 rounded-2xl p-8 transition-all duration-300 hover:bg-gray-800/70 hover:border-green-500/50 hover:shadow-lg hover:shadow-green-500/10">
-                <div className="flex items-center space-x-3 mb-6">
-                  <div className="w-12 h-12 bg-green-600/20 rounded-xl flex items-center justify-center group-hover:bg-green-600/30 transition-colors">
-                    <Headphones className="w-6 h-6 text-green-400" />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-semibold text-white">Choose Your Vibe</h3>
-                    <p className="text-gray-400">Select your coaching style</p>
-                  </div>
-                </div>
-                
-                <div className="grid gap-4">
-                  {vibeOptions.map((option) => (
-                    <label
-                      key={option.value}
-                      className={`relative flex items-center p-4 rounded-xl border-2 cursor-pointer transition-all duration-300 ${
-                        vibe === option.value
-                          ? 'border-green-500 bg-green-500/10 shadow-lg shadow-green-500/20'
-                          : 'border-gray-600 bg-gray-900/30 hover:border-gray-500 hover:bg-gray-900/50'
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="vibe"
-                        value={option.value}
-                        checked={vibe === option.value}
-                        onChange={(e) => setVibe(e.target.value)}
-                        className="sr-only"
-                      />
-                      <div className="flex items-center space-x-4 flex-1">
-                        <div className="text-2xl">{option.icon}</div>
-                        <div>
-                          <div className="text-white font-semibold">{option.label}</div>
-                          <div className="text-gray-400 text-sm">{option.description}</div>
-                        </div>
-                      </div>
-                      {vibe === option.value && (
-                        <div className="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center">
-                          <div className="w-2 h-2 bg-white rounded-full"></div>
-                        </div>
-                      )}
-                    </label>
-                  ))}
-                </div>
-              </div>
-            </div>
           </div>
 
           {/* Begin Session Button */}

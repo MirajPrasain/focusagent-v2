@@ -1,13 +1,10 @@
 import { useRef, useState, useEffect } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { Square, RotateCcw } from 'lucide-react';
-import MicroNudge from '../components/MicroNudge'
 import { detectFaces } from '../lib/faceLandmarker'
 
 // Set to true to re-enable websocket/TTS/session console logs (FaceLandmarker test logs are unaffected)
 const DEBUG_LOGS = false;
-
-type VibeType = 'calm' | 'beast' | 'gamified';
 
 interface DistractionEvent {
   timestamp: number;
@@ -15,16 +12,10 @@ interface DistractionEvent {
   count: number;
 }
 
-interface NudgeData {
-  type: 'breathing' | 'posture' | 'stretch';
-  message: string;
-}
-
 function Session() {
   const [searchParams] = useSearchParams();
   const duration = parseInt(searchParams.get("duration") || "25");
   const goal = decodeURIComponent(searchParams.get("goal") || "");
-  const vibe = (searchParams.get("vibe") || "calm") as VibeType;
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -39,42 +30,10 @@ function Session() {
   const [backendConnected, setBackendConnected] = useState(false);
   const navigate = useNavigate();
 
-  const [currentNudge, setCurrentNudge] = useState<NudgeData | null>(null);
   const [distractionHistory, setDistractionHistory] = useState<DistractionEvent[]>([]);
-  const [recentDistractions, setRecentDistractions] = useState(0);
 
   // API URL - MediaPipe backend for face detection, AI messages, and TTS
   const MEDIAPIPE_API_URL = import.meta.env.VITE_MEDIAPIPE_API_URL || 'http://localhost:8001';
-
-  // Vibe-based styling
-  const vibeStyles = {
-    calm: {
-      accent: 'blue',
-      bg: 'from-blue-500/10 to-cyan-500/10',
-      glow: 'shadow-blue-500/25',
-      border: 'border-blue-500/30',
-      text: 'text-blue-300',
-      button: 'from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700'
-    },
-    beast: {
-      accent: 'red',
-      bg: 'from-red-500/10 to-orange-500/10',
-      glow: 'shadow-red-500/25',
-      border: 'border-red-500/30',
-      text: 'text-red-300',
-      button: 'from-red-600 to-orange-600 hover:from-red-700 hover:to-orange-700'
-    },
-    gamified: {
-      accent: 'green',
-      bg: 'from-green-500/10 to-emerald-500/10',
-      glow: 'shadow-green-500/25',
-      border: 'border-green-500/30',
-      text: 'text-green-300',
-      button: 'from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700'
-    }
-  };
-
-  const currentVibe = vibeStyles[vibe] || vibeStyles.calm;
 
   // Start webcam stream
   useEffect(() => {
@@ -195,42 +154,17 @@ function Session() {
   
 const sessionStartTime = useRef(Date.now());
 
-// Track distractions and trigger micro-nudges
+// Track distraction events for the session summary
 useEffect(() => {
-  if (!distraction) {
-    setRecentDistractions(0);
-    return;
-  }
+  if (!distraction) return;
 
-  setRecentDistractions(prev => prev + 1);
-
-  // Track distraction event
-  const now = Date.now();
   setDistractionHistory(prev => [...prev, {
-    timestamp: now,
+    timestamp: Date.now(),
     type: 'distraction',
-    count: recentDistractions + 1
+    count: prev.length + 1
   }]);
-
-  // Trigger nudge after 3 consecutive distractions within 2 minutes
-  const twoMinutesAgo = now - 2 * 60 * 1000;
-  const recentEvents = distractionHistory.filter(e => e.timestamp > twoMinutesAgo);
-  
-  if (recentEvents.length >= 2 && !currentNudge) {
-    fetchPersonalizedNudge();
-  }
 }, [distraction]);
 
-// Local nudges only; the Gemini micro-nudge endpoint lived on the retired Express server
-const fetchPersonalizedNudge = () => {
-  const defaultNudges: NudgeData[] = [
-    { type: 'breathing', message: 'Take a deep breath. Inhale for 4, hold for 4, exhale for 4.' },
-    { type: 'posture', message: 'Sit up straight. Roll your shoulders back and relax.' },
-    { type: 'stretch', message: 'Stand up and stretch for 30 seconds. Your body will thank you!' }
-  ];
-  setCurrentNudge(defaultNudges[Math.floor(Math.random() * defaultNudges.length)]);
-};
-  
   // Setup WebSocket connection and frame sending
   useEffect(() => {
     if (DEBUG_LOGS) console.log('🔌 Attempting to connect to MediaPipe backend:', MEDIAPIPE_API_URL);
@@ -355,7 +289,6 @@ const handleEndSession = () => {
 
     localStorage.setItem("lastSession", JSON.stringify({
       duration,
-      vibe,
       minute: Math.floor((Date.now() - sessionStartTime.current) / 60000),
       distractionHistory: distractionHistory,
       totalDistractions: distractionHistory.length,
@@ -376,36 +309,26 @@ const handleEndSession = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 relative overflow-hidden">
-      {/* Micro-Nudge */}
-      {currentNudge && (
-        <MicroNudge
-          type={currentNudge.type}
-          message={currentNudge.message}
-          onDismiss={() => setCurrentNudge(null)}
-          duration={15000}
-        />
-      )}
-
       {/* Background decorative elements */}
       <div className="absolute inset-0">
-        <div className={`absolute top-1/4 left-1/4 w-64 h-64 bg-gradient-to-r ${currentVibe.bg} rounded-full blur-3xl opacity-30`}></div>
-        <div className={`absolute bottom-1/4 right-1/4 w-96 h-96 bg-gradient-to-l ${currentVibe.bg} rounded-full blur-3xl opacity-20`}></div>
+        <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-gradient-to-r from-blue-500/10 to-cyan-500/10 rounded-full blur-3xl opacity-30"></div>
+        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-gradient-to-l from-blue-500/10 to-cyan-500/10 rounded-full blur-3xl opacity-20"></div>
       </div>
 
       {/* Progress Bar - Fixed at top */}
       <div className="fixed top-0 left-0 right-0 z-50">
         <div className="h-2 bg-gray-800/50 backdrop-blur-sm">
-          <div 
-            className={`h-full bg-gradient-to-r ${currentVibe.button} transition-all duration-1000 ease-out ${currentVibe.glow}`}
+          <div
+            className="h-full bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 transition-all duration-1000 ease-out shadow-blue-500/25"
             style={{ width: `${sessionProgress}%` }}
           ></div>
         </div>
-        
+
         {/* Session info overlay */}
         <div className="absolute top-4 left-6 bg-gray-900/80 backdrop-blur-sm rounded-lg px-4 py-2 border border-gray-700">
           <div className="flex items-center space-x-4 text-sm">
             <div className="text-white font-medium">{formatTime(elapsedTime)} / {duration}:00</div>
-            <div className={`${currentVibe.text} font-medium`}>{Math.round(sessionProgress)}%</div>
+            <div className="text-blue-300 font-medium">{Math.round(sessionProgress)}%</div>
           </div>
         </div>
 
@@ -422,16 +345,16 @@ const handleEndSession = () => {
         
         {/* Goal Display */}
         <div className="mb-8 text-center">
-          <div className={`inline-flex items-center space-x-2 bg-gray-800/30 border ${currentVibe.border} rounded-full px-6 py-3 backdrop-blur-sm`}>
-            <div className={`w-2 h-2 ${currentVibe.text.replace('text-', 'bg-')} rounded-full animate-pulse`}></div>
+          <div className="inline-flex items-center space-x-2 bg-gray-800/30 border border-blue-500/30 rounded-full px-6 py-3 backdrop-blur-sm">
+            <div className="w-2 h-2 bg-blue-300 rounded-full animate-pulse"></div>
             <span className="text-white font-medium">🎯 {goal}</span>
           </div>
         </div>
 
         {/* Webcam Video - Bigger and Centered */}
         <div className="relative group mb-6">
-          <div className={`absolute inset-0 bg-gradient-to-r ${currentVibe.bg} rounded-3xl blur-xl opacity-50 group-hover:opacity-70 transition-opacity duration-300`}></div>
-          <div className={`relative bg-gray-900/50 backdrop-blur-sm border-2 ${currentVibe.border} rounded-3xl overflow-hidden ${currentVibe.glow} shadow-2xl`}>
+          <div className="absolute inset-0 bg-gradient-to-r from-blue-500/10 to-cyan-500/10 rounded-3xl blur-xl opacity-50 group-hover:opacity-70 transition-opacity duration-300"></div>
+          <div className="relative bg-gray-900/50 backdrop-blur-sm border-2 border-blue-500/30 rounded-3xl overflow-hidden shadow-blue-500/25 shadow-2xl">
             <video
               ref={videoRef}
               autoPlay
@@ -491,7 +414,7 @@ const handleEndSession = () => {
         <div className="flex items-center space-x-4">
           <button
             onClick={handleReplay}
-            className={`group flex items-center space-x-2 bg-gray-800/80 hover:bg-gray-700/80 border ${currentVibe.border} text-white px-6 py-3 rounded-xl transition-all duration-300 backdrop-blur-sm ${currentVibe.glow}`}
+            className="group flex items-center space-x-2 bg-gray-800/80 hover:bg-gray-700/80 border border-blue-500/30 text-white px-6 py-3 rounded-xl transition-all duration-300 backdrop-blur-sm shadow-blue-500/25"
             aria-label="Restart session"
           >
             <RotateCcw className="w-5 h-5 group-hover:rotate-180 transition-transform duration-500" />
@@ -500,7 +423,7 @@ const handleEndSession = () => {
           
           <button
             onClick={handleEndSession}
-            className={`group flex items-center space-x-2 bg-gradient-to-r ${currentVibe.button} text-white px-8 py-3 rounded-xl font-semibold transition-all duration-300 transform hover:scale-105 ${currentVibe.glow} shadow-lg`}
+            className="group flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-8 py-3 rounded-xl font-semibold transition-all duration-300 transform hover:scale-105 shadow-blue-500/25 shadow-lg"
             aria-label="End focus session"
           >
             <Square className="w-5 h-5" />

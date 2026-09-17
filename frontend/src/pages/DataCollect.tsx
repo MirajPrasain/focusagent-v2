@@ -45,6 +45,17 @@ const GUIDED_STEPS: GuidedStep[] = [
   { label: 'distracted', instruction: 'Look away to your right', duration: 12 },
 ];
 
+// Speak the last N seconds of each step out loud, so you can keep your eyes off the screen.
+const VOICE_COUNTDOWN_FROM = 5;
+
+// Cancel anything queued first, so speech never lags behind the on-screen countdown.
+const speak = (text: string) => {
+  const synth = window.speechSynthesis;
+  if (!synth) return;
+  synth.cancel();
+  synth.speak(new SpeechSynthesisUtterance(text));
+};
+
 export default function DataCollect() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [label, setLabel] = useState<Label>('unlabeled');
@@ -57,6 +68,7 @@ export default function DataCollect() {
   const [stepIndex, setStepIndex] = useState<number | null>(null);
   const [remaining, setRemaining] = useState(0);
   const [completedCount, setCompletedCount] = useState<number | null>(null);
+  const remainingRef = useRef(0);
   const rowCountRef = useRef(0);
   const sessionStartRows = useRef(0);
   const guidedRunning = stepIndex !== null;
@@ -105,8 +117,16 @@ export default function DataCollect() {
     const step = GUIDED_STEPS[stepIndex];
     setLabel(step.label === 'pause' ? 'unlabeled' : step.label);
     setRemaining(step.duration);
+    remainingRef.current = step.duration;
+    speak(step.instruction);
 
-    const tick = setInterval(() => setRemaining((r) => Math.max(0, r - 1)), 1000);
+    // One tick updates the displayed number and speaks it, so the two can't drift apart.
+    const tick = setInterval(() => {
+      const next = Math.max(0, remainingRef.current - 1);
+      remainingRef.current = next;
+      setRemaining(next);
+      if (next > 0 && next <= VOICE_COUNTDOWN_FROM) speak(String(next));
+    }, 1000);
     const advance = setTimeout(() => {
       if (stepIndex + 1 < GUIDED_STEPS.length) {
         setStepIndex(stepIndex + 1);
@@ -120,8 +140,14 @@ export default function DataCollect() {
     return () => {
       clearInterval(tick);
       clearTimeout(advance);
+      window.speechSynthesis?.cancel();
     };
   }, [stepIndex]);
+
+  // Announced from its own effect so the step effect's cleanup can't cancel it
+  useEffect(() => {
+    if (completedCount !== null) speak('Guided session complete');
+  }, [completedCount]);
 
   const startGuided = () => {
     sessionStartRows.current = rows.length;
