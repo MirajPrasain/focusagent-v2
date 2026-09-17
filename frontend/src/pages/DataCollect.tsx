@@ -22,6 +22,29 @@ const LABEL_COLORS: Record<Label, string> = {
   distracted: 'text-red-400',
 };
 
+// Guided mode: fixed script of poses, auto-advancing. 'pause' means unlabeled (nothing recorded).
+type GuidedStep = { label: 'focused' | 'distracted' | 'pause'; instruction: string; duration: number };
+
+const GUIDED_STEPS: GuidedStep[] = [
+  { label: 'focused', instruction: "Sit normally, eyes on screen like you're reading", duration: 12 },
+  { label: 'pause', instruction: 'Relax, reposition', duration: 3 },
+  { label: 'distracted', instruction: 'Look away to your left', duration: 12 },
+  { label: 'pause', instruction: 'Reposition', duration: 3 },
+  { label: 'focused', instruction: 'Hands on keyboard, typing motion, eyes on screen', duration: 12 },
+  { label: 'pause', instruction: 'Reposition', duration: 3 },
+  { label: 'distracted', instruction: 'Look down, like checking your phone', duration: 12 },
+  { label: 'pause', instruction: 'Reposition', duration: 3 },
+  { label: 'focused', instruction: 'Lean in slightly, reading intently', duration: 12 },
+  { label: 'pause', instruction: 'Reposition', duration: 3 },
+  { label: 'distracted', instruction: 'Close your eyes', duration: 12 },
+  { label: 'pause', instruction: 'Reposition', duration: 3 },
+  { label: 'focused', instruction: 'Lean back a bit, still looking at the screen', duration: 12 },
+  { label: 'pause', instruction: 'Reposition', duration: 3 },
+  { label: 'distracted', instruction: 'Turn your head fully to one side', duration: 12 },
+  { label: 'pause', instruction: 'Reposition', duration: 3 },
+  { label: 'distracted', instruction: 'Look away to your right', duration: 12 },
+];
+
 export default function DataCollect() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [label, setLabel] = useState<Label>('unlabeled');
@@ -30,10 +53,23 @@ export default function DataCollect() {
   const [faceDetected, setFaceDetected] = useState(false);
   const [status, setStatus] = useState('Requesting camera...');
 
+  // Guided session state: stepIndex is null when no session is running
+  const [stepIndex, setStepIndex] = useState<number | null>(null);
+  const [remaining, setRemaining] = useState(0);
+  const [completedCount, setCompletedCount] = useState<number | null>(null);
+  const rowCountRef = useRef(0);
+  const sessionStartRows = useRef(0);
+  const guidedRunning = stepIndex !== null;
+
   // Keep the interval callback in sync with the latest label
   useEffect(() => {
     labelRef.current = label;
   }, [label]);
+
+  // Keep a ref of the row count so the guided session can report rows added
+  useEffect(() => {
+    rowCountRef.current = rows.length;
+  }, [rows.length]);
 
   // Start webcam stream
   useEffect(() => {
@@ -51,8 +87,9 @@ export default function DataCollect() {
     return () => stream?.getTracks().forEach((t) => t.stop());
   }, []);
 
-  // Keyboard: 0 = unlabeled (paused), 1 = focused, 2 = distracted
+  // Keyboard: 0 = unlabeled (paused), 1 = focused, 2 = distracted. Ignored during a guided session.
   useEffect(() => {
+    if (guidedRunning) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === '0') setLabel('unlabeled');
       else if (e.key === '1') setLabel('focused');
@@ -60,7 +97,42 @@ export default function DataCollect() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [guidedRunning]);
+
+  // Drive the label from the guided script, advancing when each step's duration elapses
+  useEffect(() => {
+    if (stepIndex === null) return;
+    const step = GUIDED_STEPS[stepIndex];
+    setLabel(step.label === 'pause' ? 'unlabeled' : step.label);
+    setRemaining(step.duration);
+
+    const tick = setInterval(() => setRemaining((r) => Math.max(0, r - 1)), 1000);
+    const advance = setTimeout(() => {
+      if (stepIndex + 1 < GUIDED_STEPS.length) {
+        setStepIndex(stepIndex + 1);
+      } else {
+        setStepIndex(null);
+        setLabel('unlabeled');
+        setCompletedCount(rowCountRef.current - sessionStartRows.current);
+      }
+    }, step.duration * 1000);
+
+    return () => {
+      clearInterval(tick);
+      clearTimeout(advance);
+    };
+  }, [stepIndex]);
+
+  const startGuided = () => {
+    sessionStartRows.current = rows.length;
+    setCompletedCount(null);
+    setStepIndex(0);
+  };
+
+  const stopGuided = () => {
+    setStepIndex(null);
+    setLabel('unlabeled');
+  };
 
   // Run FaceLandmarker every 200ms and record a row when labeled + face detected
   useEffect(() => {
@@ -126,7 +198,26 @@ export default function DataCollect() {
         <kbd className="px-1 bg-gray-700 rounded">1</kbd> = focused,{' '}
         <kbd className="px-1 bg-gray-700 rounded">2</kbd> = distracted · {status} ·{' '}
         {faceDetected ? 'Face detected' : 'No face'}
+        {guidedRunning && ' · keys disabled during guided session'}
       </p>
+
+      {stepIndex !== null && (
+        <div className="flex flex-col items-center gap-1">
+          <div className="text-sm text-gray-400">
+            Step {stepIndex + 1} of {GUIDED_STEPS.length}
+          </div>
+          <div className="text-3xl font-semibold text-center max-w-2xl">
+            {GUIDED_STEPS[stepIndex].instruction}
+          </div>
+          <div className="text-lg text-gray-300">{remaining}s remaining</div>
+        </div>
+      )}
+
+      {completedCount !== null && (
+        <div className="text-lg text-green-400">
+          Guided session complete — {completedCount} rows recorded
+        </div>
+      )}
 
       <div className={`text-6xl font-bold uppercase ${LABEL_COLORS[label]}`}>
         {label === 'unlabeled' ? 'paused' : label}
@@ -147,6 +238,21 @@ export default function DataCollect() {
       </div>
 
       <div className="flex gap-3">
+        {guidedRunning ? (
+          <button
+            onClick={stopGuided}
+            className="px-4 py-2 rounded bg-red-600 hover:bg-red-500"
+          >
+            Stop
+          </button>
+        ) : (
+          <button
+            onClick={startGuided}
+            className="px-4 py-2 rounded bg-green-600 hover:bg-green-500"
+          >
+            Start Guided Session
+          </button>
+        )}
         <button
           onClick={downloadCsv}
           disabled={rows.length === 0}
