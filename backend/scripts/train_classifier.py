@@ -37,6 +37,7 @@ FEATURES = [
 ]
 LABEL_MAP = {"focused": 0, "distracted": 1}
 RANDOM_STATE = 42
+THRESHOLDS = [0.3, 0.35, 0.4, 0.45, 0.5]
 
 
 def load_dataset(paths):
@@ -103,6 +104,23 @@ def main():
     print(f"{'actual distracted':>20}{fn:>15}{tp:>18}")
     print(f"False alarms (focused flagged as distracted): {fp}")
     print(f"Misses (distracted not caught)              : {fn}")
+
+    # Same model, same test set: only the p(distracted) cutoff changes
+    proba = model.predict_proba(X_test)[:, 1]
+    n_focused_test, n_distracted_test = int((y_test == 0).sum()), int((y_test == 1).sum())
+    print(f"\n=== Threshold sweep (test set: {n_focused_test} focused, {n_distracted_test} distracted) ===")
+    print(f"{'threshold':>9} {'precision':>10} {'recall':>8} {'F1':>8} {'false alarms':>13} {'misses':>8}")
+    for threshold in THRESHOLDS:
+        y_thr = (proba >= threshold).astype(int)
+        tn, fp, fn, tp = confusion_matrix(y_test, y_thr, labels=[0, 1]).ravel()
+        print(
+            f"{threshold:>9.2f}"
+            f" {precision_score(y_test, y_thr, zero_division=0):>10.4f}"
+            f" {recall_score(y_test, y_thr, zero_division=0):>8.4f}"
+            f" {f1_score(y_test, y_thr, zero_division=0):>8.4f}"
+            f" {fp:>13}"
+            f" {fn:>8}"
+        )
 
     print("\n=== Learned weights (copy these) ===")
     for name, coef in zip(FEATURES, model.coef_[0]):
