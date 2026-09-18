@@ -56,6 +56,14 @@ function Session() {
     const LOG_INTERVAL_MS = 1000;
     // Same indices backend/cv_project/study_mode.py uses for scoring
     const LANDMARK_INDICES = [159, 145, 33, 133, 468, 1, 234, 454, 152, 151];
+    // Same 10 features backend/cv_project/study_mode.py's classifier was trained on
+    const BLENDSHAPE_NAMES = [
+      'eyeBlinkLeft', 'eyeBlinkRight',
+      'eyeLookDownLeft', 'eyeLookDownRight',
+      'eyeLookUpLeft', 'eyeLookUpRight',
+      'eyeLookInLeft', 'eyeLookInRight',
+      'eyeLookOutLeft', 'eyeLookOutRight',
+    ];
     let busy = false;
     let lastTimestamp = -1;
     let lastLogTime = -Infinity;
@@ -85,7 +93,15 @@ function Session() {
               if (lm) points[idx] = [Math.trunc(lm.x * w), Math.trunc(lm.y * h)];
             }
           }
-          socket.send(JSON.stringify({ type: 'landmarks', faceCount: result.faceLandmarks.length, points }));
+          // Eye blendshapes for the backend's classify_distraction() comparison (empty when no face)
+          const categories = result.faceBlendshapes[0]?.categories;
+          const blendshapes: Record<string, number> = {};
+          if (categories) {
+            for (const name of BLENDSHAPE_NAMES) {
+              blendshapes[name] = categories.find((c) => c.categoryName === name)?.score ?? 0;
+            }
+          }
+          socket.send(JSON.stringify({ type: 'landmarks', faceCount: result.faceLandmarks.length, points, blendshapes }));
         }
 
         // Debug console output only in local dev; silent in production builds

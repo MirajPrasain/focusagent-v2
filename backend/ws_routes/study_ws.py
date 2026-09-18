@@ -11,6 +11,7 @@ import time
 from cv_project.study_mode import process_frame
 from cv_project.study_mode import set_session_duration
 from cv_project.study_mode import get_focus_score, new_scoring_state
+from cv_project.study_mode import classify_distraction, DISTRACTION_WEIGHTS
 
 
 
@@ -109,6 +110,7 @@ async def study_session_handling(websocket: WebSocket):
     landmark_state = new_scoring_state()
     latest_video_score = None
     latest_landmark_score = None
+    latest_classifier = None  # (probability, is_distracted) from blendshapes
     last_compare_log = time.time()
 
     try:
@@ -155,8 +157,15 @@ async def study_session_handling(websocket: WebSocket):
                             f"Landmark-score: {latest_landmark_score} | "
                             f"diff: {abs(latest_video_score - latest_landmark_score)}"
                         )
+                    if latest_video_score is not None and latest_classifier is not None:
+                        probability, is_distracted = latest_classifier
+                        logger.info(
+                            f"t={now - session_start_time:.1f}s Video-score: {latest_video_score} | "
+                            f"Classifier: prob={probability:.2f} is_distracted={is_distracted}"
+                        )
                     latest_video_score = None
                     latest_landmark_score = None
+                    latest_classifier = None
                     last_compare_log = now
 
                 # Text messages: browser-side landmark JSON, scored for comparison only (never sent to client)
@@ -174,6 +183,13 @@ async def study_session_handling(websocket: WebSocket):
                         latest_landmark_score, _ = get_focus_score(points, landmark_state)
                     except Exception as e:
                         logger.warning(f"Landmark scoring failed: {e}")
+                    # Blendshapes are empty when no face was detected; only classify a complete set
+                    blendshapes = parsed_msg.get("blendshapes") or {}
+                    if all(name in blendshapes for name in DISTRACTION_WEIGHTS):
+                        try:
+                            latest_classifier = classify_distraction({name: float(blendshapes[name]) for name in DISTRACTION_WEIGHTS})
+                        except Exception as e:
+                            logger.warning(f"Classifier failed: {e}")
                     continue
 
                 image_bytes = message.get("bytes")
