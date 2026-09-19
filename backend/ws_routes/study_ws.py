@@ -11,7 +11,7 @@ import time
 from cv_project.study_mode import process_frame
 from cv_project.study_mode import set_session_duration
 from cv_project.study_mode import get_focus_score, new_scoring_state
-from cv_project.study_mode import classify_distraction, DISTRACTION_WEIGHTS
+from cv_project.study_mode import classify_distraction, DISTRACTION_WEIGHTS, DISTRACTION_THRESHOLD
 
 
 
@@ -110,7 +110,13 @@ async def study_session_handling(websocket: WebSocket):
     landmark_state = new_scoring_state()
     latest_video_score = None
     latest_landmark_score = None
-    latest_classifier = None  # (probability, is_distracted) from blendshapes; probability is None when no face
+    latest_classifier = None  # raw (probability, is_distracted) from the most recent landmark message
+    # EMA over per-message classifier probabilities: a single-frame spike (a blink, a momentary glance)
+    # gets pulled toward the recent average instead of flagging outright, while sustained distraction
+    # still pushes the smoothed value across the threshold within roughly 1-2s at the current message rate.
+    # SMOOTHING_ALPHA is the one knob to tune: higher reacts faster, lower filters more noise.
+    SMOOTHING_ALPHA = 0.15
+    smoothed_prob = None
     last_compare_log = time.time()
 
     try:
@@ -158,12 +164,13 @@ async def study_session_handling(websocket: WebSocket):
                             f"diff: {abs(latest_video_score - latest_landmark_score)}"
                         )
                     if latest_video_score is not None and latest_classifier is not None:
-                        probability, is_distracted = latest_classifier
-                        if probability is None:
-                            classifier_text = f"Classifier: no face detected, is_distracted={is_distracted}"
-                        else:
-                            classifier_text = f"Classifier: prob={probability:.2f} is_distracted={is_distracted}"
-                        logger.info(f"t={now - session_start_time:.1f}s Video-score: {latest_video_score} | {classifier_text}")
+                        raw_prob, raw_is_distracted = latest_classifier
+                        is_distracted_smoothed = smoothed_prob > DISTRACTION_THRESHOLD
+                        logger.info(
+                            f"t={now - session_start_time:.1f}s Video-score: {latest_video_score} | "
+                            f"Raw: prob={raw_prob:.2f} is_distracted={raw_is_distracted} | "
+                            f"Smoothed: prob={smoothed_prob:.2f} is_distracted={is_distracted_smoothed}"
+                        )
                     latest_video_score = None
                     latest_landmark_score = None
                     latest_classifier = None
@@ -184,15 +191,23 @@ async def study_session_handling(websocket: WebSocket):
                         latest_landmark_score, _ = get_focus_score(points, landmark_state)
                     except Exception as e:
                         logger.warning(f"Landmark scoring failed: {e}")
-                    # Blendshapes are empty when no face was detected: count that as distracted without calling the classifier
+                    # Blendshapes are empty when no face was detected: treat that as maximally distracted (prob 1.0)
+                    # and feed it through the same smoothing path as a real classifier reading
                     blendshapes = parsed_msg.get("blendshapes") or {}
+                    current_prob = None
                     if not blendshapes:
-                        latest_classifier = (None, True)
+                        current_prob = 1.0
                     elif all(name in blendshapes for name in DISTRACTION_WEIGHTS):
                         try:
-                            latest_classifier = classify_distraction({name: float(blendshapes[name]) for name in DISTRACTION_WEIGHTS})
+                            current_prob, _ = classify_distraction({name: float(blendshapes[name]) for name in DISTRACTION_WEIGHTS})
                         except Exception as e:
                             logger.warning(f"Classifier failed: {e}")
+                    if current_prob is not None:
+                        latest_classifier = (current_prob, current_prob > DISTRACTION_THRESHOLD)
+                        if smoothed_prob is None:
+                            smoothed_prob = current_prob
+                        else:
+                            smoothed_prob = SMOOTHING_ALPHA * current_prob + (1 - SMOOTHING_ALPHA) * smoothed_prob
                     continue
 
                 image_bytes = message.get("bytes")
