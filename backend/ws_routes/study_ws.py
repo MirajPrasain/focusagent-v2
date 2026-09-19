@@ -117,6 +117,7 @@ async def study_session_handling(websocket: WebSocket):
     # SMOOTHING_ALPHA is the one knob to tune: higher reacts faster, lower filters more noise.
     SMOOTHING_ALPHA = 0.15
     smoothed_prob = None
+    max_raw_prob = 0.0  # highest raw probability since the last log line, so short blinks aren't missed by sampling
     last_compare_log = time.time()
 
     try:
@@ -168,12 +169,13 @@ async def study_session_handling(websocket: WebSocket):
                         is_distracted_smoothed = smoothed_prob > DISTRACTION_THRESHOLD
                         logger.info(
                             f"t={now - session_start_time:.1f}s Video-score: {latest_video_score} | "
-                            f"Raw: prob={raw_prob:.2f} is_distracted={raw_is_distracted} | "
+                            f"Raw: prob={raw_prob:.2f} (peak={max_raw_prob:.2f}) is_distracted={raw_is_distracted} | "
                             f"Smoothed: prob={smoothed_prob:.2f} is_distracted={is_distracted_smoothed}"
                         )
                     latest_video_score = None
                     latest_landmark_score = None
                     latest_classifier = None
+                    max_raw_prob = 0.0
                     last_compare_log = now
 
                 # Text messages: browser-side landmark JSON, scored for comparison only (never sent to client)
@@ -204,6 +206,7 @@ async def study_session_handling(websocket: WebSocket):
                             logger.warning(f"Classifier failed: {e}")
                     if current_prob is not None:
                         latest_classifier = (current_prob, current_prob > DISTRACTION_THRESHOLD)
+                        max_raw_prob = max(max_raw_prob, current_prob)
                         if smoothed_prob is None:
                             smoothed_prob = current_prob
                         else:
