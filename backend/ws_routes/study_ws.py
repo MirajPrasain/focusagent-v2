@@ -110,7 +110,7 @@ async def study_session_handling(websocket: WebSocket):
     landmark_state = new_scoring_state()
     latest_video_score = None
     latest_landmark_score = None
-    latest_classifier = None  # (probability, is_distracted) from blendshapes
+    latest_classifier = None  # (probability, is_distracted) from blendshapes; probability is None when no face
     last_compare_log = time.time()
 
     try:
@@ -159,10 +159,11 @@ async def study_session_handling(websocket: WebSocket):
                         )
                     if latest_video_score is not None and latest_classifier is not None:
                         probability, is_distracted = latest_classifier
-                        logger.info(
-                            f"t={now - session_start_time:.1f}s Video-score: {latest_video_score} | "
-                            f"Classifier: prob={probability:.2f} is_distracted={is_distracted}"
-                        )
+                        if probability is None:
+                            classifier_text = f"Classifier: no face detected, is_distracted={is_distracted}"
+                        else:
+                            classifier_text = f"Classifier: prob={probability:.2f} is_distracted={is_distracted}"
+                        logger.info(f"t={now - session_start_time:.1f}s Video-score: {latest_video_score} | {classifier_text}")
                     latest_video_score = None
                     latest_landmark_score = None
                     latest_classifier = None
@@ -183,9 +184,11 @@ async def study_session_handling(websocket: WebSocket):
                         latest_landmark_score, _ = get_focus_score(points, landmark_state)
                     except Exception as e:
                         logger.warning(f"Landmark scoring failed: {e}")
-                    # Blendshapes are empty when no face was detected; only classify a complete set
+                    # Blendshapes are empty when no face was detected: count that as distracted without calling the classifier
                     blendshapes = parsed_msg.get("blendshapes") or {}
-                    if all(name in blendshapes for name in DISTRACTION_WEIGHTS):
+                    if not blendshapes:
+                        latest_classifier = (None, True)
+                    elif all(name in blendshapes for name in DISTRACTION_WEIGHTS):
                         try:
                             latest_classifier = classify_distraction({name: float(blendshapes[name]) for name in DISTRACTION_WEIGHTS})
                         except Exception as e:
