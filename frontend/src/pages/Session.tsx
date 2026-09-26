@@ -56,7 +56,7 @@ function Session() {
     const LOG_INTERVAL_MS = 1000;
     // Same indices backend/cv_project/study_mode.py uses for scoring
     const LANDMARK_INDICES = [159, 145, 33, 133, 468, 1, 234, 454, 152, 151];
-    // Same 10 features backend/cv_project/study_mode.py's classifier was trained on
+    // Same 10 features backend/cv_project/distraction_classifier.py was trained on
     const BLENDSHAPE_NAMES = [
       'eyeBlinkLeft', 'eyeBlinkRight',
       'eyeLookDownLeft', 'eyeLookDownRight',
@@ -68,15 +68,21 @@ function Session() {
     let lastTimestamp = -1;
     let lastLogTime = -Infinity;
 
+
     const interval = setInterval(async () => {
       const video = videoRef.current;
+      //if busy, no video , video not ready, video not loaded(width = 0 ) - > dont do anything
       if (busy || !video || video.readyState < 2 || video.videoWidth === 0) return;
 
       const timestamp = performance.now();
+      // 100, 200, 300. timestamp should be increasing, if it less than last, dont do anything 
       if (timestamp <= lastTimestamp) return;
       lastTimestamp = timestamp;
 
+      //Before starting to detect video, set busy flag to true. 
       busy = true;
+
+     
       try {
         const result = await detectFaces(video, timestamp);
 
@@ -86,11 +92,13 @@ function Session() {
           const w = video.videoWidth;
           const h = video.videoHeight;
           const face = result.faceLandmarks[0];
+          
+          //make the points array 
           const points: Record<string, [number, number]> = {};
           if (face) {
             for (const idx of LANDMARK_INDICES) {
               const lm = face[idx];
-              if (lm) points[idx] = [Math.trunc(lm.x * w), Math.trunc(lm.y * h)];
+              if (lm) points[idx] = [Math.trunc(lm.x * w), Math.trunc(lm.y * h)]; //adds points to the array 
             }
           }
           // Eye blendshapes for the backend's classify_distraction() comparison (empty when no face)
@@ -101,7 +109,10 @@ function Session() {
               blendshapes[name] = categories.find((c) => c.categoryName === name)?.score ?? 0;
             }
           }
-          socket.send(JSON.stringify({ type: 'landmarks', faceCount: result.faceLandmarks.length, points, blendshapes }));
+          socket.send(JSON.stringify({ type: 'landmarks',
+             faceCount: result.faceLandmarks.length,
+              points, 
+              blendshapes }));
         }
 
         // Debug console output only in local dev; silent in production builds
@@ -191,6 +202,8 @@ useEffect(() => {
     const socket = new WebSocket(wsUrl);
     socketRef.current = socket;
 
+    //Every 200ms (5 fps): draw the video onto the hidden <canvas>, canvas.toBlob(..., "image/jpeg", 0.8), and socket.send(blob) as a binary message.
+
     socket.onopen = () => {
       if (DEBUG_LOGS) console.log("✅ Connected to backend Study WebSocket server");
       socket.send(JSON.stringify({ duration }));
@@ -222,6 +235,8 @@ useEffect(() => {
         }
       }, 200);
     };
+
+    //onmessage receives {score, cheat_events} back and drives the UI: focus score box, "Distraction detected" badge, status text. This is the only path whose output the user sees.
 
     socket.onmessage = (event) => {
       try {

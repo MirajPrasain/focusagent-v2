@@ -32,10 +32,8 @@ export function getFaceLandmarker(): Promise<FaceLandmarker> {
 }
 
 // timestampMs must increase monotonically across calls in VIDEO mode
-export async function detectFaces(
-  video: HTMLVideoElement,
-  timestampMs: number
-): Promise<FaceLandmarkerResult> {
-  const landmarker = await getFaceLandmarker();
+export async function detectFaces(video: HTMLVideoElement, timestampMs: number ):  Promise<FaceLandmarkerResult>
+ {
+  const landmarker = await getFaceLandmarker(); //unwrapping the  Promise<FaceLandmarker> 
   return landmarker.detectForVideo(video, timestampMs);
 }
