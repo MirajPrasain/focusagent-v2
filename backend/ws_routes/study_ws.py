@@ -1,17 +1,15 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
 import cv2
 from cv2 import imdecode, IMREAD_COLOR
-import base64
 import numpy as np
 import json
 import logging
-from typing import Union, Tuple
 import time
 
 from cv_project.study_mode import process_frame
 from cv_project.study_mode import set_session_duration
 from cv_project.study_mode import get_focus_score, new_scoring_state
-from cv_project.study_mode import classify_distraction, DISTRACTION_WEIGHTS, DISTRACTION_THRESHOLD
+from cv_project.distraction_classifier import classify_distraction, DISTRACTION_WEIGHTS, DISTRACTION_THRESHOLD
 
 
 
@@ -20,80 +18,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 router = APIRouter() 
-
-def validate_image_data(image_data: str) -> bool:
-    """Validate image data before processing."""
-    if not image_data or len(image_data) < 100:  # Minimum reasonable size
-        return False
-    
-    if not image_data.startswith('data:image/'):
-        return False
-    
-    try:
-        # Check if we can extract the base64 part
-        parts = image_data.split(',')
-        if len(parts) != 2:
-            return False
-        
-        # Try to decode a small portion to validate base64
-        test_bytes = base64.b64decode(parts[1][:100] + '==')  # Add padding
-        return len(test_bytes) > 0
-    except Exception:
-        return False
-
-def decode_image_safely(image_data: str) -> Tuple[bool, Union[np.ndarray, None]]:
-    """Safely decode image data with comprehensive error handling."""
-    try:
-        # Validate image data format
-        if not validate_image_data(image_data):
-            logger.warning("Invalid image data format received")
-            return False, None
-        
-        # Extract base64 data
-        parts = image_data.split(',')
-        if len(parts) != 2:
-            logger.warning("Malformed image data: missing base64 separator")
-            return False, None
-        
-        # Decode base64
-        try:
-            image_bytes = base64.b64decode(parts[1])
-        except Exception as e:
-            logger.warning(f"Base64 decode failed: {e}")
-            return False, None
-        
-        # Convert to numpy array
-        try:
-            image_array = np.frombuffer(image_bytes, np.uint8)
-        except Exception as e:
-            logger.warning(f"Failed to create numpy array: {e}")
-            return False, None
-        
-        # Validate array size
-        if image_array.size == 0:
-            logger.warning("Empty image array received")
-            return False, None
-        
-        if image_array.size < 1000:  # Minimum reasonable image size
-            logger.warning(f"Image array too small: {image_array.size} bytes")
-            return False, None
-        
-        # Decode image
-        frame = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
-        if frame is None:
-            logger.warning("Failed to decode image with OpenCV")
-            return False, None
-        
-        # Validate frame dimensions
-        if frame.shape[0] < 10 or frame.shape[1] < 10:
-            logger.warning(f"Image dimensions too small: {frame.shape}")
-            return False, None
-        
-        return True, frame
-        
-    except Exception as e:
-        logger.warning(f"Unexpected error during image decoding: {e}")
-        return False, None
 
 @router.websocket('/ws/study')
 async def study_session_handling(websocket: WebSocket):
@@ -118,6 +42,7 @@ async def study_session_handling(websocket: WebSocket):
     SMOOTHING_ALPHA = 0.15
     smoothed_prob = None
     max_raw_prob = 0.0  # highest raw probability since the last log line, so short blinks aren't missed by sampling
+    peak_blendshapes = None  # the blendshapes that produced max_raw_prob; None when that frame had no face
     last_compare_log = time.time()
 
     try:
@@ -164,7 +89,7 @@ async def study_session_handling(websocket: WebSocket):
                             f"Landmark-score: {latest_landmark_score} | "
                             f"diff: {abs(latest_video_score - latest_landmark_score)}"
                         )
-                    if latest_video_score is not None and latest_classifier is not None:
+                    if latest_video_score is not None and latest_classifier is not None and smoothed_prob is not None:
                         raw_prob, raw_is_distracted = latest_classifier
                         is_distracted_smoothed = smoothed_prob > DISTRACTION_THRESHOLD
                         logger.info(
@@ -172,10 +97,16 @@ async def study_session_handling(websocket: WebSocket):
                             f"Raw: prob={raw_prob:.2f} (peak={max_raw_prob:.2f}) is_distracted={raw_is_distracted} | "
                             f"Smoothed: prob={smoothed_prob:.2f} is_distracted={is_distracted_smoothed}"
                         )
+                        if peak_blendshapes is None:
+                            peak_text = "no face detected"
+                        else:
+                            peak_text = " ".join(f"{name}={value:.2f}" for name, value in peak_blendshapes.items())
+                        logger.info(f"t={now - session_start_time:.1f}s Peak frame blendshapes: {peak_text}")
                     latest_video_score = None
                     latest_landmark_score = None
                     latest_classifier = None
                     max_raw_prob = 0.0
+                    peak_blendshapes = None
                     last_compare_log = now
 
                 # Text messages: browser-side landmark JSON, scored for comparison only (never sent to client)
@@ -197,16 +128,20 @@ async def study_session_handling(websocket: WebSocket):
                     # and feed it through the same smoothing path as a real classifier reading
                     blendshapes = parsed_msg.get("blendshapes") or {}
                     current_prob = None
+                    features = None
                     if not blendshapes:
                         current_prob = 1.0
                     elif all(name in blendshapes for name in DISTRACTION_WEIGHTS):
                         try:
-                            current_prob, _ = classify_distraction({name: float(blendshapes[name]) for name in DISTRACTION_WEIGHTS})
+                            features = {name: float(blendshapes[name]) for name in DISTRACTION_WEIGHTS}
+                            current_prob, _ = classify_distraction(features)
                         except Exception as e:
                             logger.warning(f"Classifier failed: {e}")
                     if current_prob is not None:
                         latest_classifier = (current_prob, current_prob > DISTRACTION_THRESHOLD)
-                        max_raw_prob = max(max_raw_prob, current_prob)
+                        if current_prob >= max_raw_prob:
+                            max_raw_prob = current_prob
+                            peak_blendshapes = features
                         if smoothed_prob is None:
                             smoothed_prob = current_prob
                         else:
