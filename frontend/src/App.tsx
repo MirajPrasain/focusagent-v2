@@ -1,7 +1,7 @@
 import { Routes, Route } from "react-router-dom";
 
 import Home from './pages/Home';
-import PreSession from './pages/PreSession';
+import Setup from './pages/Setup';
 import Session from './pages/Session'; 
 import Summary from './pages/Summary';
 import DataCollect from './pages/DataCollect';
@@ -14,7 +14,7 @@ function App() {
       {/* <FocusAgent /> */}
       <Routes>
         <Route path="/" element={<Home />} />
-        <Route path="/pre-session" element={<PreSession />} />
+        <Route path="/setup" element={<Setup />} />
         <Route path= "/session" element={<Session />} /> 
         <Route path="/summary" element={<Summary />} />
         {/* Dev-only data collection tool; intentionally not linked in nav */}

@@ -13,7 +13,7 @@ const Home = () => {
           Watches whether your eyes stay on your screen while you work, and shows how focused you stayed.
         </p>
         <p className="mt-2 text-sm text-fg-muted">Video never leaves your device.</p>
-        <Button className="mt-8" onClick={() => navigate('/pre-session')}>Start a session</Button>
+        <Button className="mt-8" onClick={() => navigate('/setup')}>Start a session</Button>
       </div>
     </PageShell>
   );

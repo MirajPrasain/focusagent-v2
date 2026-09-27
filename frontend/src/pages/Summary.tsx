@@ -100,7 +100,7 @@ const Summary = () => {
   return (
     <PageShell wide>
       <div className="mt-8">{body}</div>
-      <Button className="mt-10" onClick={() => navigate('/pre-session')}>Start another session</Button>
+      <Button className="mt-10" onClick={() => navigate('/setup')}>Start another session</Button>
     </PageShell>
   );
 };

@@ -5,7 +5,8 @@ type Size = 'sm' | 'md';
 
 const VARIANTS: Record<Variant, string> = {
   primary: 'bg-accent font-medium text-white hover:bg-accent/90',
-  secondary: 'border border-border bg-surface text-fg hover:bg-border',
+  // Also a choice or toggle: aria-pressed shows it as selected
+  secondary: 'border border-border bg-surface text-fg hover:bg-border aria-pressed:border-accent aria-pressed:bg-accent/15',
   // Also a toggle: aria-pressed shows it as on
   text: 'text-fg-secondary underline-offset-4 hover:text-fg hover:underline aria-pressed:text-fg aria-pressed:underline',
 };
