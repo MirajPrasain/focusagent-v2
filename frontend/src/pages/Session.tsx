@@ -2,9 +2,34 @@ import { useRef, useState, useEffect } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { Square, RotateCcw } from 'lucide-react';
 import { detectFaces } from '../lib/faceLandmarker'
+import { speak } from '../lib/speech'
 
 // Set to true to re-enable websocket/TTS/session console logs (FaceLandmarker test logs are unaffected)
 const DEBUG_LOGS = false;
+
+// Screen calibration at the start of each session. Each phase is sent to the backend as it starts
+// ({"type": "calibration", "phase": ...}); backend/cv_project/landmark_pipeline.py turns the gaze measured
+// in each phase into this user's on-screen range. "choice" waits for a button and isn't measured.
+type CalibrationPhase = 'center' | 'left' | 'right' | 'choice' | 'second_screen' | 'done';
+
+const CALIBRATION_STEPS: Record<Exclude<CalibrationPhase, 'done'>, {
+  prompt: string;
+  dot: 'center' | 'left' | 'right' | null;
+  seconds: number;
+  next: CalibrationPhase | null; // null: wait for a button
+}> = {
+  center: { prompt: 'Look at the dot in the center', dot: 'center', seconds: 3, next: 'left' },
+  left: { prompt: 'Look at the left edge of your screen', dot: 'left', seconds: 2, next: 'right' },
+  right: { prompt: 'Look at the right edge of your screen', dot: 'right', seconds: 2, next: 'choice' },
+  choice: { prompt: 'Do you use a second screen?', dot: null, seconds: 0, next: null },
+  second_screen: { prompt: 'Look at the middle of your second screen', dot: null, seconds: 3, next: 'done' },
+};
+
+const CALIBRATION_DOT_POSITION = {
+  center: 'left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2',
+  left: 'left-2 top-1/2 -translate-y-1/2',
+  right: 'right-2 top-1/2 -translate-y-1/2',
+};
 
 interface DistractionEvent {
   timestamp: number;
@@ -28,6 +53,7 @@ function Session() {
   const [sessionProgress, setSessionProgress] = useState(0);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [backendConnected, setBackendConnected] = useState(false);
+  const [calibrationPhase, setCalibrationPhase] = useState<CalibrationPhase>('center');
   const navigate = useNavigate();
 
   const [distractionHistory, setDistractionHistory] = useState<DistractionEvent[]>([]);
@@ -319,6 +345,26 @@ useEffect(() => {
     };
   }, [duration, MEDIAPIPE_API_URL]);
 
+  // Run the calibration once the websocket is open: announce each phase to the backend, speak its prompt,
+  // and advance after its duration. Skipping jumps straight to 'done', which is announced the same way.
+  useEffect(() => {
+    if (!backendConnected) return;
+    const socket = socketRef.current;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'calibration', phase: calibrationPhase }));
+    }
+    if (calibrationPhase === 'done') {
+      speak('Calibration done');
+      return;
+    }
+    const step = CALIBRATION_STEPS[calibrationPhase];
+    speak(step.prompt);
+    if (step.next === null) return;
+    const next = step.next;
+    const timer = setTimeout(() => setCalibrationPhase(next), step.seconds * 1000);
+    return () => clearTimeout(timer);
+  }, [calibrationPhase, backendConnected]);
+
 const handleEndSession = () => {
     if (DEBUG_LOGS) console.log("🚀 Ending Study Session...");
     if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
@@ -477,6 +523,51 @@ const handleEndSession = () => {
           </button>
         </div>
       </div>
+
+      {/* Calibration overlay: covers the session until calibration is done or skipped */}
+      {calibrationPhase !== 'done' && (() => {
+        const step = CALIBRATION_STEPS[calibrationPhase];
+        return (
+          <div className="fixed inset-0 z-[60] bg-gray-900/95 backdrop-blur-sm">
+            {backendConnected && step.dot && (
+              <div className={`absolute w-6 h-6 rounded-full bg-cyan-400 shadow-lg shadow-cyan-400/50 ${CALIBRATION_DOT_POSITION[step.dot]}`} />
+            )}
+
+            <div className="absolute inset-x-0 top-1/4 px-6 text-center">
+              <div className="text-sm text-blue-300 font-medium mb-2">Screen calibration</div>
+              <div className="text-2xl text-white font-semibold">
+                {backendConnected ? step.prompt : 'Connecting to the backend...'}
+              </div>
+            </div>
+
+            {backendConnected && calibrationPhase === 'choice' && (
+              <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center gap-4 px-6">
+                <button
+                  onClick={() => setCalibrationPhase('second_screen')}
+                  className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300"
+                >
+                  I use a second screen
+                </button>
+                <button
+                  onClick={() => setCalibrationPhase('done')}
+                  className="bg-gray-800/80 hover:bg-gray-700/80 border border-blue-500/30 text-white px-6 py-3 rounded-xl font-medium transition-all duration-300"
+                >
+                  No second screen
+                </button>
+              </div>
+            )}
+
+            <div className="absolute bottom-8 inset-x-0 flex justify-center">
+              <button
+                onClick={() => setCalibrationPhase('done')}
+                className="text-gray-400 hover:text-white text-sm underline underline-offset-4 transition-colors"
+              >
+                Skip calibration
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Hidden canvas for frame processing */}
       <canvas ref={canvasRef} className="hidden" aria-hidden="true" />

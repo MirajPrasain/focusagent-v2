@@ -1,5 +1,6 @@
 import json
 import logging
+import statistics
 from collections import deque, namedtuple
 
 from cv_project.geometry import eye_openness, head_down_ratio
@@ -19,6 +20,10 @@ logger = logging.getLogger(__name__)
 #     ├── headPose yaw + eye blendshapes -> gaze_yaw -> get_gaze_score()   logged only
 #     └── blendshapes -> classify_distraction()   raw probability ─┐
 #                     -> eyes-closed window (PERCLOS) (1.0 if closed) ─┴-> EMA (smoothed_prob)
+#
+#   calibration message {"phase": ...} (start of the session, see CALIBRATION_PHASES)
+#     while a phase runs, landmark messages only collect gaze_yaw; nothing is scored
+#     "done" -> screen_ranges that get_gaze_score() checks gaze_yaw against
 
 # EMA over per-message classifier probabilities: a single-frame spike (a blink, a momentary glance)
 # gets pulled toward the recent average instead of flagging outright, while sustained distraction
@@ -40,9 +45,20 @@ EYES_CLOSED_RATIO = 0.7
 #   gaze_yaw = head_yaw - EYE_TO_HEAD_DEG * eye_turn   (head_yaw positive = head turned to the user's left)
 # EYE_TO_HEAD_DEG converts eye_turn to degrees; a fixed guess until per-user calibration replaces it.
 EYE_TO_HEAD_DEG = 33
-# The screen spans SCREEN_CENTER_DEG ± SCREEN_HALF_WIDTH_DEG of gaze_yaw; outside that counts as off screen
+# Without calibration the screen spans SCREEN_CENTER_DEG ± SCREEN_HALF_WIDTH_DEG of gaze_yaw
 SCREEN_CENTER_DEG = 0
 SCREEN_HALF_WIDTH_DEG = 15
+DEFAULT_SCREEN_RANGE = (SCREEN_CENTER_DEG - SCREEN_HALF_WIDTH_DEG, SCREEN_CENTER_DEG + SCREEN_HALF_WIDTH_DEG)
+
+# Per-session calibration (Session.tsx): the browser sends {"type": "calibration", "phase": ...} at the start of
+# each phase and the user looks where the prompt says. Each phase's gaze_yaw samples are reduced to their median.
+#   main screen range   = [median(left), median(right)] (low to high) widened by SCREEN_MARGIN_DEG on each side
+#   second screen range = median(second_screen) ± SECOND_SCREEN_HALF_WIDTH_DEG, only if that phase was recorded
+# "choice" is the pause while the user picks whether they have a second screen: calibrating, but not collected.
+# "done" ends calibration; with no left/right samples (e.g. skipped) the main range stays DEFAULT_SCREEN_RANGE.
+CALIBRATION_PHASES = ("center", "left", "right", "choice", "second_screen")
+SCREEN_MARGIN_DEG = 3
+SECOND_SCREEN_HALF_WIDTH_DEG = 8
 # Looking off screen alone leaves 100 - 70 = 30, below the score < 40 distraction cutoff (study_mode.py)
 GAZE_OFF_SCREEN_PENALTY = 70
 
@@ -53,7 +69,7 @@ GAZE_OFF_SCREEN_PENALTY = 70
 #   head_pose: (yaw, pitch) in degrees from the browser's facial transformation matrix
 #   iris_ratios: (horizontal, vertical) from get_iris_ratios on the points
 #   eye_turn, gaze_yaw: see EYE_TO_HEAD_DEG
-#   gaze_score: get_gaze_score on the points and gaze_yaw
+#   gaze_score: get_gaze_score on the points and gaze_yaw (None during calibration: nothing is scored then)
 LandmarkReading = namedtuple(
     "LandmarkReading",
     ["focus_score", "probability", "blendshapes", "head_pose", "iris_ratios", "eye_turn", "gaze_yaw", "gaze_score"],
@@ -61,8 +77,9 @@ LandmarkReading = namedtuple(
 )
 
 
-def get_gaze_score(landmarks, gaze_yaw, state):
-    """get_focus_score with its horizontal rules (head turn, horizontal iris) replaced by one gaze_yaw rule.
+def get_gaze_score(landmarks, gaze_yaw, state, screen_ranges=(DEFAULT_SCREEN_RANGE,)):
+    """get_focus_score with its horizontal rules (head turn, horizontal iris) replaced by one gaze_yaw rule:
+    off screen unless gaze_yaw is inside one of screen_ranges ((low, high) pairs, in degrees).
     The vertical rules, the eyes-closed check and no-face are copied from get_focus_score unchanged.
     Returns None when gaze_yaw is None, since the horizontal direction can't be judged."""
     if not has_all_landmarks(landmarks):
@@ -75,7 +92,7 @@ def get_gaze_score(landmarks, gaze_yaw, state):
     head_down_value = head_down_ratio(landmarks[1], landmarks[152], landmarks[151])
 
     focus = 100
-    if abs(gaze_yaw - SCREEN_CENTER_DEG) > SCREEN_HALF_WIDTH_DEG:
+    if not any(low <= gaze_yaw <= high for low, high in screen_ranges):
         focus -= GAZE_OFF_SCREEN_PENALTY
     if iris_vertical < 0.25 or iris_vertical > 0.75:
         focus -= 50
@@ -106,36 +123,77 @@ class LandmarkPipeline:
         self.smoothed_prob = None
         # Closed/open status of the last EYES_CLOSED_WINDOW messages, for the eyes-closed rule
         self.eyes_closed_window = deque(maxlen=EYES_CLOSED_WINDOW)
+        # Calibration: the running phase (None when not calibrating), gaze_yaw samples per phase,
+        # and the (low, high) gaze_yaw ranges that count as on screen
+        self.calibration_phase = None
+        self.calibration_samples = {}
+        self.screen_ranges = [DEFAULT_SCREEN_RANGE]
 
     @property
     def closed_count(self):
         """How many of the last EYES_CLOSED_WINDOW messages had closed eyes."""
         return sum(self.eyes_closed_window)
 
-    def handle_landmark_message(self, text):
-        """Scores and classifies one landmark JSON message, updates smoothed_prob, and returns a LandmarkReading."""
+    def handle_text_message(self, text):
+        """Handles one text message: a landmark message returns its LandmarkReading, a calibration message
+        updates the calibration and returns None."""
         try:
             message = json.loads(text)
         except json.JSONDecodeError as e:
             logger.warning(f"Invalid landmark JSON: {e}")
             return LandmarkReading(None, None, None)
+        if message.get("type") == "calibration":
+            self.handle_calibration_message(message)
+            return None
         if message.get("type") != "landmarks":
             logger.warning(f"Unknown text message: {message}")
             return LandmarkReading(None, None, None)
+        return self.handle_landmark_message(message)
 
-        # Points -> rule-based focus score (+ iris ratios, logged only)
-        focus_score = None
-        iris_ratios = None
+    def handle_calibration_message(self, message):
+        """Starts collecting a calibration phase, or on "done" turns the collected samples into screen_ranges."""
+        phase = message.get("phase")
+        if phase == "center":
+            self.calibration_samples = {}  # a new calibration run starts from scratch
+        if phase in CALIBRATION_PHASES:
+            self.calibration_phase = phase
+        elif phase == "done":
+            self.calibration_phase = None
+            self.finish_calibration()
+        else:
+            logger.warning(f"Unknown calibration phase: {message}")
+
+    def finish_calibration(self):
+        """Sets screen_ranges from the median gaze_yaw of each recorded phase and logs the result."""
+        medians = {phase: statistics.median(samples) for phase, samples in self.calibration_samples.items() if samples}
+        if "left" in medians and "right" in medians:
+            low, high = sorted((medians["left"], medians["right"]))
+            main = (low - SCREEN_MARGIN_DEG, high + SCREEN_MARGIN_DEG)
+            main_text = f"[{main[0]:.1f}, {main[1]:.1f}]"
+        else:
+            main = DEFAULT_SCREEN_RANGE
+            main_text = f"[{main[0]:.1f}, {main[1]:.1f}] (default, not calibrated)"
+        self.screen_ranges = [main]
+        second_text = "none"
+        if "second_screen" in medians:
+            second = (medians["second_screen"] - SECOND_SCREEN_HALF_WIDTH_DEG,
+                      medians["second_screen"] + SECOND_SCREEN_HALF_WIDTH_DEG)
+            self.screen_ranges.append(second)
+            second_text = f"[{second[0]:.1f}, {second[1]:.1f}]"
+        counts = " ".join(f"{phase}={len(samples)}" for phase, samples in self.calibration_samples.items())
+        center = f"{medians['center']:.1f}" if "center" in medians else "n/a"
+        logger.info(f"Calibration: main={main_text} second={second_text} | center={center} samples: {counts or 'none'}")
+
+    def handle_landmark_message(self, message):
+        """Scores and classifies one parsed landmark message, updates smoothed_prob, and returns a LandmarkReading.
+        During calibration it only collects gaze_yaw for the running phase and scores nothing."""
         points = {}
         try:
             points = {int(idx): tuple(xy) for idx, xy in (message.get("points") or {}).items()}
-            focus_score, _ = get_focus_score(points, self.scoring_state)
-            if has_all_landmarks(points):
-                iris_ratios = get_iris_ratios(points)
         except Exception as e:
-            logger.warning(f"Landmark scoring failed: {e}")
+            logger.warning(f"Invalid landmark points: {e}")
 
-        # Head pose (logged only). null when the browser had no transformation matrix, i.e. no face
+        # Head pose. null when the browser had no transformation matrix, i.e. no face
         head_pose = None
         pose = message.get("headPose")
         if pose:
@@ -144,10 +202,9 @@ class LandmarkPipeline:
             except (KeyError, TypeError, ValueError) as e:
                 logger.warning(f"Invalid headPose {pose}: {e}")
 
-        # Head yaw + eye blendshapes -> gaze angle -> gaze score (logged only)
+        # Head yaw + eye blendshapes -> gaze angle
         eye_turn = None
         gaze_yaw = None
-        gaze_score = None
         try:
             blendshapes = message.get("blendshapes") or {}
             if blendshapes:
@@ -157,7 +214,29 @@ class LandmarkPipeline:
                             - look["eyeLookInRight"] - look["eyeLookOutLeft"]) / 2
                 if head_pose is not None:
                     gaze_yaw = head_pose[0] - EYE_TO_HEAD_DEG * eye_turn
-            gaze_score = get_gaze_score(points, gaze_yaw, self.gaze_scoring_state)
+        except Exception as e:
+            logger.warning(f"Gaze angle failed: {e}")
+
+        # Calibrating: collect gaze_yaw for the running phase ("choice" collects nothing) and score nothing
+        if self.calibration_phase is not None:
+            if gaze_yaw is not None and self.calibration_phase != "choice":
+                self.calibration_samples.setdefault(self.calibration_phase, []).append(gaze_yaw)
+            return LandmarkReading(None, None, None, head_pose, None, eye_turn, gaze_yaw, None)
+
+        # Points -> rule-based focus score (+ iris ratios, logged only)
+        focus_score = None
+        iris_ratios = None
+        try:
+            focus_score, _ = get_focus_score(points, self.scoring_state)
+            if has_all_landmarks(points):
+                iris_ratios = get_iris_ratios(points)
+        except Exception as e:
+            logger.warning(f"Landmark scoring failed: {e}")
+
+        # Gaze angle -> gaze score against the (calibrated) screen ranges (logged only)
+        gaze_score = None
+        try:
+            gaze_score = get_gaze_score(points, gaze_yaw, self.gaze_scoring_state, self.screen_ranges)
         except Exception as e:
             logger.warning(f"Gaze scoring failed: {e}")
 

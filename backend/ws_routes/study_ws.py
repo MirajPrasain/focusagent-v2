@@ -118,8 +118,10 @@ async def study_session_handling(websocket: WebSocket):
 
                 if message.get("text") is not None:
                     # Landmark JSON pipeline (text): scored and classified, not sent to the client yet
-                    reading = landmarks.handle_landmark_message(message["text"])
-                    comparison.record_landmark_reading(reading)
+                    # Calibration messages return None: nothing to record
+                    reading = landmarks.handle_text_message(message["text"])
+                    if reading is not None:
+                        comparison.record_landmark_reading(reading)
 
                 elif message.get("bytes") is not None:
                     # JPEG frame pipeline (binary): decoded, scored, and the score sent to the client
