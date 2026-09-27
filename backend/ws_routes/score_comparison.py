@@ -81,6 +81,7 @@ class ScoreComparisonLog:
             logger.info(f"t={t:.1f}s Gaze: head_yaw={fmt(yaw, '.1f')} eye_turn={fmt(reading.eye_turn, '.2f')} "
                         f"gaze_yaw={fmt(reading.gaze_yaw, '.1f')} | Landmark-score={fmt(reading.focus_score, '')} | "
                         f"Gaze-score={fmt(reading.gaze_score, '')}")
+            logger.info(f"t={t:.1f}s Vertical: head_pitch={fmt(pitch, '.1f')} eye_pitch={fmt(reading.eye_pitch, '.2f')}")
 
         self._start_window()
         self.last_log = now
