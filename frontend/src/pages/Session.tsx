@@ -109,10 +109,25 @@ function Session() {
               blendshapes[name] = categories.find((c) => c.categoryName === name)?.score ?? 0;
             }
           }
+          // Head yaw/pitch in degrees from the 4x4 facial transformation matrix (null when no face)
+          const matrix = result.facialTransformationMatrixes?.[0]?.data;
+          let headPose: { yaw: number; pitch: number } | null = null;
+          if (matrix && matrix.length === 16) {
+            // Column-major, so column 2 (data[8..10]) is the face's forward axis in camera space
+            // (x right, y up, z toward the camera). atan2 cancels out any scale in the matrix.
+            // yaw > 0: turned toward the image's right (the user's left); pitch > 0: tilted up
+            const [fx, fy, fz] = [matrix[8], matrix[9], matrix[10]];
+            const toDeg = (rad: number) => Math.round((rad * 180) / Math.PI * 10) / 10;
+            headPose = {
+              yaw: toDeg(Math.atan2(fx, fz)),
+              pitch: toDeg(Math.atan2(fy, Math.hypot(fx, fz))),
+            };
+          }
           socket.send(JSON.stringify({ type: 'landmarks',
              faceCount: result.faceLandmarks.length,
-              points, 
-              blendshapes }));
+              points,
+              blendshapes,
+              headPose }));
         }
 
         // Debug console output only in local dev; silent in production builds

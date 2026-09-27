@@ -2,7 +2,7 @@ import json
 import logging
 from collections import deque, namedtuple
 
-from cv_project.study_mode import get_focus_score, new_scoring_state
+from cv_project.study_mode import get_focus_score, get_iris_ratios, has_all_landmarks, new_scoring_state
 from cv_project.distraction_classifier import classify_distraction, DISTRACTION_WEIGHTS
 
 logger = logging.getLogger(__name__)
@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 #
 #   landmark message
 #     ├── points      -> get_focus_score()        rule-based score
+#     │               -> get_iris_ratios()        logged only
+#     ├── headPose    -> yaw/pitch in degrees     logged only
 #     └── blendshapes -> classify_distraction()   raw probability ─┐
 #                     -> eyes-closed window (PERCLOS) (1.0 if closed) ─┴-> EMA (smoothed_prob)
 
@@ -35,7 +37,10 @@ EYES_CLOSED_RATIO = 0.7
 #   focus_score: get_focus_score on the points
 #   probability: raw classifier probability (1.0 when no face was detected or the eyes-closed rule fired)
 #   blendshapes: both eyeBlink values plus the gaze features the classifier saw (None when no face was detected)
-LandmarkReading = namedtuple("LandmarkReading", ["focus_score", "probability", "blendshapes"])
+#   head_pose: (yaw, pitch) in degrees from the browser's facial transformation matrix
+#   iris_ratios: (horizontal, vertical) from get_iris_ratios on the points
+LandmarkReading = namedtuple("LandmarkReading", ["focus_score", "probability", "blendshapes", "head_pose", "iris_ratios"],
+                             defaults=[None, None])
 
 
 class LandmarkPipeline:
@@ -64,13 +69,25 @@ class LandmarkPipeline:
             logger.warning(f"Unknown text message: {message}")
             return LandmarkReading(None, None, None)
 
-        # Points -> rule-based focus score
+        # Points -> rule-based focus score (+ iris ratios, logged only)
         focus_score = None
+        iris_ratios = None
         try:
             points = {int(idx): tuple(xy) for idx, xy in (message.get("points") or {}).items()}
             focus_score, _ = get_focus_score(points, self.scoring_state)
+            if has_all_landmarks(points):
+                iris_ratios = get_iris_ratios(points)
         except Exception as e:
             logger.warning(f"Landmark scoring failed: {e}")
+
+        # Head pose (logged only). null when the browser had no transformation matrix, i.e. no face
+        head_pose = None
+        pose = message.get("headPose")
+        if pose:
+            try:
+                head_pose = (float(pose["yaw"]), float(pose["pitch"]))
+            except (KeyError, TypeError, ValueError) as e:
+                logger.warning(f"Invalid headPose {pose}: {e}")
 
         # Blendshapes -> distraction classifier + eyes-closed rule
         # Blendshapes are empty when no face was detected: treat that as maximally distracted (prob 1.0)
@@ -102,4 +119,4 @@ class LandmarkPipeline:
             else:
                 self.smoothed_prob = SMOOTHING_ALPHA * probability + (1 - SMOOTHING_ALPHA) * self.smoothed_prob
 
-        return LandmarkReading(focus_score, probability, features)
+        return LandmarkReading(focus_score, probability, features, head_pose, iris_ratios)
