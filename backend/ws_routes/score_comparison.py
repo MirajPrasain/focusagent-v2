@@ -26,9 +26,7 @@ class ScoreComparisonLog:
         self.classifier = None  # raw (probability, is_distracted) from the most recent landmark message
         self.max_raw_prob = 0.0  # highest raw probability since the last log line, so short blinks aren't missed by sampling
         self.peak_blendshapes = None  # the blendshapes that produced max_raw_prob; None when that frame had no face
-        self.landmark_seen = False  # any landmark message since the last log line
-        self.head_pose = None  # (yaw, pitch) from the most recent landmark message
-        self.iris_ratios = None  # (horizontal, vertical) from the most recent landmark message
+        self.latest_reading = None  # the most recent LandmarkReading since the last log line
 
     # JPEG frame pipeline (binary messages)
     def record_video_score(self, score):
@@ -37,9 +35,7 @@ class ScoreComparisonLog:
 
     # Landmark JSON pipeline (text messages)
     def record_landmark_reading(self, reading):
-        self.landmark_seen = True
-        self.head_pose = reading.head_pose
-        self.iris_ratios = reading.iris_ratios
+        self.latest_reading = reading
         if reading.focus_score is not None:
             self.landmark_score = reading.focus_score
         if reading.probability is not None:
@@ -74,10 +70,17 @@ class ScoreComparisonLog:
             else:
                 peak_text = " ".join(f"{name}={value:.2f}" for name, value in self.peak_blendshapes.items())
             logger.info(f"t={t:.1f}s Peak frame blendshapes: {peak_text}")
-        if self.landmark_seen:
-            yaw, pitch = (f"{v:.1f}" for v in self.head_pose) if self.head_pose else ("n/a", "n/a")
-            iris_h, iris_v = (f"{v:.2f}" for v in self.iris_ratios) if self.iris_ratios else ("n/a", "n/a")
-            logger.info(f"t={t:.1f}s Head/iris: head_yaw={yaw} head_pitch={pitch} iris_h={iris_h} iris_v={iris_v}")
+        reading = self.latest_reading
+        if reading is not None:
+            def fmt(value, spec):
+                return "n/a" if value is None else format(value, spec)
+            yaw, pitch = reading.head_pose or (None, None)
+            iris_h, iris_v = reading.iris_ratios or (None, None)
+            logger.info(f"t={t:.1f}s Head/iris: head_yaw={fmt(yaw, '.1f')} head_pitch={fmt(pitch, '.1f')} "
+                        f"iris_h={fmt(iris_h, '.2f')} iris_v={fmt(iris_v, '.2f')}")
+            logger.info(f"t={t:.1f}s Gaze: head_yaw={fmt(yaw, '.1f')} eye_turn={fmt(reading.eye_turn, '.2f')} "
+                        f"gaze_yaw={fmt(reading.gaze_yaw, '.1f')} | Landmark-score={fmt(reading.focus_score, '')} | "
+                        f"Gaze-score={fmt(reading.gaze_score, '')}")
 
         self._start_window()
         self.last_log = now
