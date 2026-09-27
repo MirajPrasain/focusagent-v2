@@ -64,8 +64,23 @@ backend replies to `done` with `{"type": "calibration", "status": "ok" | "too_na
    It opens `/session?duration=..&goal=..`.
 3. Calibrate: follow the dot around the whole screen. Answer the second-screen question, and do the five
    points if you use one.
-4. Do the test stages, holding each for about 5s so it gets several log lines.
+4. Do the 7-stage protocol below.
 5. End the session. The comparison is in `backend/<name>.log`. `*.log` is gitignored, so logs stay local.
+
+### 7-stage protocol
+
+Setup: put the session window and VS Code side by side, both visible. Count the seconds in your head, so
+nothing on screen pulls your eyes away between stages.
+
+| # | Stage | Duration |
+|---|---|---|
+| 1 | Read on screen | ~12s |
+| 2 | Look away | ~10s |
+| 3 | Type | ~12s |
+| 4 | Eyes closed | ~8s |
+| 5 | Read and scroll | ~12s |
+| 6 | Phone in your lap, face still in view, looking down at it | ~10s |
+| 7 | Think, eyes on screen | ~10s |
 
 ## Log lines
 
