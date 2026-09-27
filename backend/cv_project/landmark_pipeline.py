@@ -71,8 +71,8 @@ EVENT_MULTIPLE_FACES = 3
 EVENT_EYES_CLOSED = 4
 EVENT_LOW_SCORE = 5
 
-# Sent instead of a score once session_duration has passed
-SESSION_ENDED = "Session Ended"
+# Sent instead of a score once session_duration has passed; the browser ends the session when it gets it
+SESSION_ENDED = json.dumps({"type": "session_ended"})
 
 
 def get_gaze_score(landmarks, gaze_yaw, state, screen_ranges=(DEFAULT_SCREEN_RANGE,), face_count=1):
@@ -150,7 +150,7 @@ class LandmarkPipeline:
     def handle_text_message(self, text):
         """Handles one text message and returns the text to send back to the client, or None: the calibration
         result for the calibration "done" message, {"score", "cheat_events"} for a scored landmark message, and
-        SESSION_ENDED for a landmark message after the session is over."""
+        SESSION_ENDED ({"type": "session_ended"}) for a landmark message after the session is over."""
         try:
             message = json.loads(text)
         except json.JSONDecodeError as e:

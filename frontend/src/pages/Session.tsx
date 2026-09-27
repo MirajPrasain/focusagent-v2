@@ -248,7 +248,7 @@ function Session() {
 
       if (progress >= 100) {
         clearInterval(timer);
-        handleEndSession();
+        endSessionRef.current();
       }
     }, 1000);
 
@@ -296,6 +296,12 @@ useEffect(() => {
         if (data.type === 'calibration') {
           setCalibrationStatus((current) =>
             current === 'checking' ? (data.status === 'too_narrow' ? 'failed' : 'done') : current);
+          return;
+        }
+
+        // The backend's session clock ran out: end the session here too
+        if (data.type === 'session_ended') {
+          endSessionRef.current();
           return;
         }
 
@@ -495,6 +501,11 @@ const handleEndSession = () => {
     }));
     navigate("/post-session");
   };
+
+  // The session timer and the websocket are set up once, so they end the session through this ref: calling
+  // handleEndSession directly would save the distraction history and score from when they were set up
+  const endSessionRef = useRef(handleEndSession);
+  endSessionRef.current = handleEndSession;
 
   const handleReplay = () => {
     window.location.reload();
