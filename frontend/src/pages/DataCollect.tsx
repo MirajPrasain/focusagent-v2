@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { detectFaces } from '../lib/faceLandmarker'
+import { speak } from '../lib/speech'
 
 // TEMP dev tool: collect labeled blendshape rows for focus/distraction training data.
 // Browser-only — no websocket or backend calls. Not linked from nav; open /data-collect directly.
@@ -47,14 +48,6 @@ const GUIDED_STEPS: GuidedStep[] = [
 
 // Speak the last N seconds of each step out loud, so you can keep your eyes off the screen.
 const VOICE_COUNTDOWN_FROM = 5;
-
-// Cancel anything queued first, so speech never lags behind the on-screen countdown.
-const speak = (text: string) => {
-  const synth = window.speechSynthesis;
-  if (!synth) return;
-  synth.cancel();
-  synth.speak(new SpeechSynthesisUtterance(text));
-};
 
 export default function DataCollect() {
   const videoRef = useRef<HTMLVideoElement>(null);
