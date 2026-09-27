@@ -43,6 +43,8 @@ EYE_TO_HEAD_DEG = 33
 # The screen spans SCREEN_CENTER_DEG ± SCREEN_HALF_WIDTH_DEG of gaze_yaw; outside that counts as off screen
 SCREEN_CENTER_DEG = 0
 SCREEN_HALF_WIDTH_DEG = 15
+# Looking off screen alone leaves 100 - 70 = 30, below the score < 40 distraction cutoff (study_mode.py)
+GAZE_OFF_SCREEN_PENALTY = 70
 
 # What one landmark message produced. Each field is None when that part couldn't be computed.
 #   focus_score: get_focus_score on the points
@@ -74,7 +76,7 @@ def get_gaze_score(landmarks, gaze_yaw, state):
 
     focus = 100
     if abs(gaze_yaw - SCREEN_CENTER_DEG) > SCREEN_HALF_WIDTH_DEG:
-        focus -= 50
+        focus -= GAZE_OFF_SCREEN_PENALTY
     if iris_vertical < 0.25 or iris_vertical > 0.75:
         focus -= 50
     if head_down_value > 1.3 or head_down_value < 0.75:
