@@ -442,21 +442,26 @@ useEffect(() => {
     };
     const show = (view: Partial<CalibrationView>) => setCalibrationView({ ...IDLE_VIEW, ...view });
 
-    // Speak the instruction, wait for it to finish, count down "3, 2, 1", record, then say "okay"
-    const record = async (prompt: string, phase: string, seconds: number, extra: Record<string, unknown> = {},
-                          scan = false) => {
-      show({ prompt, dot: scan ? 'ready' : 'none' });
+    // Speak the instruction, wait for it to finish, count down "3, 2, 1", record, then say "okay".
+    // scan: show the main-screen dot. screenText: show only this text for the whole step (the user is looking
+    // at another screen, so the dot, countdown and recording indicator would only pull their eyes back).
+    const record = async (prompt: string, phase: string, seconds: number,
+                          { extra = {}, scan = false, screenText }:
+                            { extra?: Record<string, unknown>; scan?: boolean; screenText?: string } = {}) => {
+      const view = (stage: Partial<CalibrationView>) =>
+        show(screenText ? { prompt: screenText } : { prompt, dot: scan ? 'ready' : 'none', ...stage });
+      view({});
       await step(speakAndWait(prompt));
       for (let n = COUNTDOWN_FROM; n > 0; n--) {
-        show({ prompt, dot: scan ? 'ready' : 'none', countdown: n });
+        view({ countdown: n });
         speak(String(n));
         await step(sleep(1000));
       }
-      show({ prompt, dot: scan ? 'moving' : 'none', recording: true });
+      view({ dot: scan ? 'moving' : 'none', recording: true });
       sendCalibration(phase, extra);
       await step(sleep(seconds * 1000));
       sendCalibration('idle');
-      show({ prompt: 'Okay' });
+      show({ prompt: screenText ?? 'Okay' });
       await step(speakAndWait('Okay'));
     };
 
@@ -464,7 +469,7 @@ useEffect(() => {
       setCalibrationStatus('running');
       sendCalibration('idle'); // calibrating from here on: the backend stops scoring
 
-      await record('Follow the dot with your eyes.', 'main', MAIN_SCAN_SECONDS, {}, true);
+      await record('Follow the dot with your eyes.', 'main', MAIN_SCAN_SECONDS, { scan: true });
 
       const question = 'Do you use a second screen?';
       show({ prompt: question, asking: true });
@@ -476,8 +481,9 @@ useEffect(() => {
 
       if (hasSecondScreen) {
         for (const point of SECOND_SCREEN_POINTS) {
-          await record(`Look at the ${point.label} of your second screen.`, 'second_screen',
-            SECOND_SCREEN_POINT_SECONDS, { point: point.id });
+          await record(`Look at the ${point.label} of your second screen. Keep looking until you hear 'okay'.`,
+            'second_screen', SECOND_SCREEN_POINT_SECONDS,
+            { extra: { point: point.id }, screenText: 'Keep your eyes on your second screen' });
         }
       }
 

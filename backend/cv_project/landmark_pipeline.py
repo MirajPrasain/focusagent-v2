@@ -44,6 +44,8 @@ EYES_CLOSED_RATIO = 0.7
 
 # Horizontal gaze angle = head yaw corrected by how far the eyes are turned in their sockets:
 #   eye_turn = (eyeLookInLeft + eyeLookOutRight - eyeLookInRight - eyeLookOutLeft) / 2, positive = eyes to the user's right
+# Vertical counterpart, logged only for now (no vertical gaze angle or scoring yet):
+#   eye_pitch = (eyeLookUpLeft + eyeLookUpRight - eyeLookDownLeft - eyeLookDownRight) / 2, positive = eyes up
 #   gaze_yaw = head_yaw - EYE_TO_HEAD_DEG * eye_turn   (head_yaw positive = head turned to the user's left)
 # EYE_TO_HEAD_DEG converts eye_turn to degrees; a fixed guess until per-user calibration replaces it.
 EYE_TO_HEAD_DEG = 33
@@ -60,13 +62,17 @@ DEFAULT_SCREEN_RANGE = (SCREEN_CENTER_DEG - SCREEN_HALF_WIDTH_DEG, SCREEN_CENTER
 #   "done"           calibration ends; {"skipped": true} discards the samples and keeps the default range
 # The first CALIBRATION_SETTLE_S of every recording is ignored while the eyes move to the target.
 #   main screen range   = CALIBRATION_PERCENTILES of the main samples, widened by SCREEN_MARGIN_DEG on each side
-#   second screen range = same over all second_screen samples, only if that phase was recorded
+#   second screen range = [min, max] of the per-point medians, widened by SECOND_SCREEN_MARGIN_DEG on each side,
+#                         only if that phase was recorded. Per-point medians, so a glance back at the main screen
+#                         during one point can't stretch the range. Where it overlaps the main range it's cut off
+#                         at the main range's edge (the main range wins)
 # If the main samples span less than MIN_MAIN_RANGE_DEG (before the margin), the user probably didn't follow
 # the dot: the main range falls back to DEFAULT_SCREEN_RANGE and the client is told so it can offer a redo.
 CALIBRATION_RECORDING_PHASES = ("main", "second_screen")
 CALIBRATION_SETTLE_S = 0.5
 CALIBRATION_PERCENTILES = (5, 95)
 SCREEN_MARGIN_DEG = 3
+SECOND_SCREEN_MARGIN_DEG = 5
 MIN_MAIN_RANGE_DEG = 6
 # Looking off screen alone leaves 100 - 70 = 30, below the score < 40 distraction cutoff (study_mode.py)
 GAZE_OFF_SCREEN_PENALTY = 70
@@ -77,12 +83,13 @@ GAZE_OFF_SCREEN_PENALTY = 70
 #   blendshapes: both eyeBlink values plus the gaze features the classifier saw (None when no face was detected)
 #   head_pose: (yaw, pitch) in degrees from the browser's facial transformation matrix
 #   iris_ratios: (horizontal, vertical) from get_iris_ratios on the points
-#   eye_turn, gaze_yaw: see EYE_TO_HEAD_DEG
+#   eye_turn, gaze_yaw, eye_pitch: see EYE_TO_HEAD_DEG
 #   gaze_score: get_gaze_score on the points and gaze_yaw (None during calibration: nothing is scored then)
 LandmarkReading = namedtuple(
     "LandmarkReading",
-    ["focus_score", "probability", "blendshapes", "head_pose", "iris_ratios", "eye_turn", "gaze_yaw", "gaze_score"],
-    defaults=[None] * 5,
+    ["focus_score", "probability", "blendshapes", "head_pose", "iris_ratios", "eye_turn", "gaze_yaw", "gaze_score",
+     "eye_pitch"],
+    defaults=[None] * 6,
 )
 
 
@@ -132,10 +139,12 @@ class LandmarkPipeline:
         self.smoothed_prob = None
         # Closed/open status of the last EYES_CLOSED_WINDOW messages, for the eyes-closed rule
         self.eyes_closed_window = deque(maxlen=EYES_CLOSED_WINDOW)
-        # Calibration: the running phase (None when not calibrating), when its recording started,
-        # gaze_yaw samples per recording phase, and the (low, high) gaze_yaw ranges that count as on screen
+        # Calibration: the running phase (None when not calibrating), when its recording started, gaze_yaw samples
+        # per recording ("main", or "second_screen/<point>" for each second-screen point), and the (low, high)
+        # gaze_yaw ranges that count as on screen
         self.calibration_phase = None
         self.recording_started = None
+        self.recording_key = None
         self.calibration_samples = {}
         self.screen_ranges = [DEFAULT_SCREEN_RANGE]
 
@@ -167,6 +176,7 @@ class LandmarkPipeline:
         if phase == "idle" or phase in CALIBRATION_RECORDING_PHASES:
             self.calibration_phase = phase
             self.recording_started = time.monotonic()
+            self.recording_key = f"second_screen/{message.get('point', 'unknown')}" if phase == "second_screen" else phase
         elif phase == "done":
             self.calibration_phase = None
             if message.get("skipped"):
@@ -199,15 +209,30 @@ class LandmarkPipeline:
                 status, main, main_note = "ok", (low - SCREEN_MARGIN_DEG, high + SCREEN_MARGIN_DEG), ""
         self.screen_ranges = [main]
 
-        second = None
-        if self.calibration_samples.get("second_screen"):
-            low, high = percentile_range(self.calibration_samples["second_screen"])
-            second = (low - SCREEN_MARGIN_DEG, high + SCREEN_MARGIN_DEG)
-            self.screen_ranges.append(second)
+        second, second_note = None, ""
+        point_medians = {key.split("/", 1)[1]: float(np.median(samples))
+                         for key, samples in self.calibration_samples.items()
+                         if key.startswith("second_screen/") and samples}
+        if point_medians:
+            low = min(point_medians.values()) - SECOND_SCREEN_MARGIN_DEG
+            high = max(point_medians.values()) + SECOND_SCREEN_MARGIN_DEG
+            # Overlap with the main range: cut the second range off at the main range's nearer edge
+            if (low + high) / 2 < (main[0] + main[1]) / 2:
+                cut = (low, min(high, main[0]))
+            else:
+                cut = (max(low, main[1]), high)
+            if cut != (low, high):
+                second_note = f" (cut at main edge from {fmt((low, high))})"
+            if cut[0] < cut[1]:
+                second = cut
+                self.screen_ranges.append(second)
+            else:
+                second_note = f" (dropped: {fmt((low, high))} lies inside the main range)"
 
-        counts = " ".join(f"{phase}={len(samples)}" for phase, samples in self.calibration_samples.items())
-        logger.info(f"Calibration: main={fmt(main)}{main_note} second={fmt(second) if second else 'none'} | "
-                    f"samples: {counts or 'none'}")
+        counts = " ".join(f"{key}={len(samples)}" for key, samples in self.calibration_samples.items())
+        medians = " ".join(f"{point}={value:.1f}" for point, value in point_medians.items())
+        logger.info(f"Calibration: main={fmt(main)}{main_note} second={fmt(second) if second else 'none'}{second_note} | "
+                    f"second-screen medians: {medians or 'none'} | samples: {counts or 'none'}")
         return {"type": "calibration", "status": status, "main": list(main), "second": list(second) if second else None}
 
     def handle_landmark_message(self, message):
@@ -228,16 +253,20 @@ class LandmarkPipeline:
             except (KeyError, TypeError, ValueError) as e:
                 logger.warning(f"Invalid headPose {pose}: {e}")
 
-        # Head yaw + eye blendshapes -> gaze angle
+        # Head yaw + eye blendshapes -> gaze angle (+ eye_pitch, logged only)
         eye_turn = None
+        eye_pitch = None
         gaze_yaw = None
         try:
             blendshapes = message.get("blendshapes") or {}
             if blendshapes:
                 look = {name: float(blendshapes.get(name, 0)) for name in
-                        ("eyeLookInLeft", "eyeLookOutRight", "eyeLookInRight", "eyeLookOutLeft")}
+                        ("eyeLookInLeft", "eyeLookOutRight", "eyeLookInRight", "eyeLookOutLeft",
+                         "eyeLookUpLeft", "eyeLookUpRight", "eyeLookDownLeft", "eyeLookDownRight")}
                 eye_turn = (look["eyeLookInLeft"] + look["eyeLookOutRight"]
                             - look["eyeLookInRight"] - look["eyeLookOutLeft"]) / 2
+                eye_pitch = (look["eyeLookUpLeft"] + look["eyeLookUpRight"]
+                             - look["eyeLookDownLeft"] - look["eyeLookDownRight"]) / 2
                 if head_pose is not None:
                     gaze_yaw = head_pose[0] - EYE_TO_HEAD_DEG * eye_turn
         except Exception as e:
@@ -247,8 +276,8 @@ class LandmarkPipeline:
         if self.calibration_phase is not None:
             settled = time.monotonic() - self.recording_started >= CALIBRATION_SETTLE_S
             if gaze_yaw is not None and self.calibration_phase in CALIBRATION_RECORDING_PHASES and settled:
-                self.calibration_samples.setdefault(self.calibration_phase, []).append(gaze_yaw)
-            return LandmarkReading(None, None, None, head_pose, None, eye_turn, gaze_yaw, None)
+                self.calibration_samples.setdefault(self.recording_key, []).append(gaze_yaw)
+            return LandmarkReading(None, None, None, head_pose, None, eye_turn, gaze_yaw, None, eye_pitch)
 
         # Points -> rule-based focus score (+ iris ratios, logged only)
         focus_score = None
@@ -297,4 +326,5 @@ class LandmarkPipeline:
             else:
                 self.smoothed_prob = SMOOTHING_ALPHA * probability + (1 - SMOOTHING_ALPHA) * self.smoothed_prob
 
-        return LandmarkReading(focus_score, probability, features, head_pose, iris_ratios, eye_turn, gaze_yaw, gaze_score)
+        return LandmarkReading(focus_score, probability, features, head_pose, iris_ratios, eye_turn, gaze_yaw, gaze_score,
+                               eye_pitch)
