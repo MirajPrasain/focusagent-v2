@@ -1,35 +1,85 @@
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { Square, RotateCcw } from 'lucide-react';
 import { detectFaces } from '../lib/faceLandmarker'
-import { speak } from '../lib/speech'
+import { speak, speakAndWait, sleep } from '../lib/speech'
 
 // Set to true to re-enable websocket/TTS/session console logs (FaceLandmarker test logs are unaffected)
 const DEBUG_LOGS = false;
 
-// Screen calibration at the start of each session. Each phase is sent to the backend as it starts
-// ({"type": "calibration", "phase": ...}); backend/cv_project/landmark_pipeline.py turns the gaze measured
-// in each phase into this user's on-screen range. "choice" waits for a button and isn't measured.
-type CalibrationPhase = 'center' | 'left' | 'right' | 'choice' | 'second_screen' | 'done';
+// Screen calibration, run once a face is seen and before the session timer starts.
+// Every timed step: speak the instruction, wait for speech to end, voice countdown "3, 2, 1", record, "okay".
+// The backend (backend/cv_project/landmark_pipeline.py) is told {"type": "calibration", "phase": ...}:
+// "main" / "second_screen" when a recording starts, "idle" whenever it isn't recording, "done" at the end.
+// It turns the gaze recorded in each phase into this user's on-screen ranges and replies with the result.
+const MAIN_SCAN_SECONDS = 10; // the dot takes ~2.5s per edge of the screen border
+const SECOND_SCREEN_POINT_SECONDS = 2;
+const COUNTDOWN_FROM = 3;
+// No reply to "done" within this long (e.g. an older backend): start the session anyway
+const CALIBRATION_REPLY_TIMEOUT_MS = 3000;
 
-const CALIBRATION_STEPS: Record<Exclude<CalibrationPhase, 'done'>, {
+const SECOND_SCREEN_POINTS = [
+  { id: 'top_left', label: 'top left corner' },
+  { id: 'top_right', label: 'top right corner' },
+  { id: 'bottom_right', label: 'bottom right corner' },
+  { id: 'bottom_left', label: 'bottom left corner' },
+  { id: 'center', label: 'center' },
+];
+
+// waiting: no face yet; running: the steps below; checking: waiting for the backend's result;
+// failed: the backend found the scan too narrow; done: overlay closed, session timer running
+type CalibrationStatus = 'waiting' | 'running' | 'checking' | 'failed' | 'done';
+
+type CalibrationView = {
   prompt: string;
-  dot: 'center' | 'left' | 'right' | null;
-  seconds: number;
-  next: CalibrationPhase | null; // null: wait for a button
-}> = {
-  center: { prompt: 'Look at the dot in the center', dot: 'center', seconds: 3, next: 'left' },
-  left: { prompt: 'Look at the left edge of your screen', dot: 'left', seconds: 2, next: 'right' },
-  right: { prompt: 'Look at the right edge of your screen', dot: 'right', seconds: 2, next: 'choice' },
-  choice: { prompt: 'Do you use a second screen?', dot: null, seconds: 0, next: null },
-  second_screen: { prompt: 'Look at the middle of your second screen', dot: null, seconds: 3, next: 'done' },
+  dot: 'none' | 'ready' | 'moving'; // the main-screen scan dot: parked at its start, or moving
+  countdown: number | null;
+  recording: boolean;
+  asking: boolean; // showing the second-screen Yes / No buttons
 };
 
-const CALIBRATION_DOT_POSITION = {
-  center: 'left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2',
-  left: 'left-2 top-1/2 -translate-y-1/2',
-  right: 'right-2 top-1/2 -translate-y-1/2',
-};
+const IDLE_VIEW: CalibrationView = { prompt: '', dot: 'none', countdown: null, recording: false, asking: false };
+
+// Thrown inside a calibration run that was cancelled (skip, redo or unmount) to stop it at its next step
+const CANCELLED = Symbol('calibration cancelled');
+
+// Point on the screen border (percent of the viewport) at fraction t of one lap, starting top left:
+// top edge left to right, right edge down, bottom edge right to left, left edge up
+function borderPoint(t: number) {
+  const lo = 3, hi = 97;
+  const edge = Math.min(Math.floor(t * 4), 3);
+  const along = (t * 4 - edge) * (hi - lo);
+  return [
+    { x: lo + along, y: lo },
+    { x: hi, y: lo + along },
+    { x: hi - along, y: hi },
+    { x: lo, y: hi - along },
+  ][edge];
+}
+
+// The dot for the main-screen scan: parked at the start of the lap until `moving`, then one lap in MAIN_SCAN_SECONDS
+function ScanDot({ moving }: { moving: boolean }) {
+  const [t, setT] = useState(0);
+  useEffect(() => {
+    if (!moving) return;
+    const start = performance.now();
+    let frame = 0;
+    const tick = (now: number) => {
+      const progress = Math.min((now - start) / (MAIN_SCAN_SECONDS * 1000), 1);
+      setT(progress);
+      if (progress < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [moving]);
+  const { x, y } = borderPoint(moving ? t : 0);
+  return (
+    <div
+      className="absolute w-6 h-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-400 shadow-lg shadow-cyan-400/50"
+      style={{ left: `${x}%`, top: `${y}%` }}
+    />
+  );
+}
 
 interface DistractionEvent {
   timestamp: number;
@@ -53,8 +103,15 @@ function Session() {
   const [sessionProgress, setSessionProgress] = useState(0);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [backendConnected, setBackendConnected] = useState(false);
-  const [calibrationPhase, setCalibrationPhase] = useState<CalibrationPhase>('center');
   const navigate = useNavigate();
+
+  const [faceSeen, setFaceSeen] = useState(false);
+  const faceSeenRef = useRef(false);
+  const [calibrationStatus, setCalibrationStatus] = useState<CalibrationStatus>('waiting');
+  const [calibrationView, setCalibrationView] = useState<CalibrationView>(IDLE_VIEW);
+  const calibrationRunRef = useRef(0); // bumped to cancel the running calibration
+  const secondScreenAnswerRef = useRef<((yes: boolean) => void) | null>(null);
+  const sessionStarted = calibrationStatus === 'done';
 
   const [distractionHistory, setDistractionHistory] = useState<DistractionEvent[]>([]);
 
@@ -154,6 +211,11 @@ function Session() {
               points,
               blendshapes,
               headPose }));
+          // The first landmark message with a face starts the calibration
+          if (face && !faceSeenRef.current) {
+            faceSeenRef.current = true;
+            setFaceSeen(true);
+          }
         }
 
         // Debug console output only in local dev; silent in production builds
@@ -199,9 +261,11 @@ function Session() {
     return () => clearInterval(interval);
   }, []);
 
-  // Session timer and progress
+  // Session timer and progress: starts once calibration is finished or skipped
   useEffect(() => {
+    if (!sessionStarted) return;
     const startTime = Date.now();
+    sessionStartTime.current = startTime;
     const totalDurationMs = duration * 60 * 1000;
 
     const timer = setInterval(() => {
@@ -218,7 +282,7 @@ function Session() {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [duration]);
+  }, [duration, sessionStarted]);
   
 const sessionStartTime = useRef(Date.now());
 
@@ -284,6 +348,13 @@ useEffect(() => {
         const data = JSON.parse(event.data);
         if (DEBUG_LOGS) console.log('📊 Received from backend:', data);
 
+        // Calibration result (reply to "done"): only matters while the overlay waits for it
+        if (data.type === 'calibration') {
+          setCalibrationStatus((current) =>
+            current === 'checking' ? (data.status === 'too_narrow' ? 'failed' : 'done') : current);
+          return;
+        }
+
         if (data.error) {
           const errorMessages: Record<string, string> = {
             invalid_json: "Invalid session data, please reconnect...",
@@ -345,25 +416,109 @@ useEffect(() => {
     };
   }, [duration, MEDIAPIPE_API_URL]);
 
-  // Run the calibration once the websocket is open: announce each phase to the backend, speak its prompt,
-  // and advance after its duration. Skipping jumps straight to 'done', which is announced the same way.
-  useEffect(() => {
-    if (!backendConnected) return;
+  const sendCalibration = useCallback((phase: string, extra: Record<string, unknown> = {}) => {
     const socket = socketRef.current;
     if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'calibration', phase: calibrationPhase }));
+      socket.send(JSON.stringify({ type: 'calibration', phase, ...extra }));
     }
-    if (calibrationPhase === 'done') {
-      speak('Calibration done');
-      return;
+  }, []);
+
+  // Stops a running calibration at its next step and silences it
+  const cancelCalibration = useCallback(() => {
+    calibrationRunRef.current += 1;
+    window.speechSynthesis?.cancel();
+    secondScreenAnswerRef.current?.(false);
+    secondScreenAnswerRef.current = null;
+  }, []);
+
+  // One full calibration run. Every await is followed by a check, so a cancelled run stops before its next
+  // side effect (message, speech or UI change).
+  const runCalibration = useCallback(async () => {
+    const runId = ++calibrationRunRef.current;
+    const step = async <T,>(promise: Promise<T>) => {
+      const value = await promise;
+      if (runId !== calibrationRunRef.current) throw CANCELLED;
+      return value;
+    };
+    const show = (view: Partial<CalibrationView>) => setCalibrationView({ ...IDLE_VIEW, ...view });
+
+    // Speak the instruction, wait for it to finish, count down "3, 2, 1", record, then say "okay"
+    const record = async (prompt: string, phase: string, seconds: number, extra: Record<string, unknown> = {},
+                          scan = false) => {
+      show({ prompt, dot: scan ? 'ready' : 'none' });
+      await step(speakAndWait(prompt));
+      for (let n = COUNTDOWN_FROM; n > 0; n--) {
+        show({ prompt, dot: scan ? 'ready' : 'none', countdown: n });
+        speak(String(n));
+        await step(sleep(1000));
+      }
+      show({ prompt, dot: scan ? 'moving' : 'none', recording: true });
+      sendCalibration(phase, extra);
+      await step(sleep(seconds * 1000));
+      sendCalibration('idle');
+      show({ prompt: 'Okay' });
+      await step(speakAndWait('Okay'));
+    };
+
+    try {
+      setCalibrationStatus('running');
+      sendCalibration('idle'); // calibrating from here on: the backend stops scoring
+
+      await record('Follow the dot with your eyes.', 'main', MAIN_SCAN_SECONDS, {}, true);
+
+      const question = 'Do you use a second screen?';
+      show({ prompt: question, asking: true });
+      speak(question);
+      const hasSecondScreen = await step(new Promise<boolean>((resolve) => {
+        secondScreenAnswerRef.current = resolve;
+      }));
+      secondScreenAnswerRef.current = null;
+
+      if (hasSecondScreen) {
+        for (const point of SECOND_SCREEN_POINTS) {
+          await record(`Look at the ${point.label} of your second screen.`, 'second_screen',
+            SECOND_SCREEN_POINT_SECONDS, { point: point.id });
+        }
+      }
+
+      show({ prompt: 'Checking your calibration...' });
+      setCalibrationStatus('checking');
+      sendCalibration('done');
+    } catch (err) {
+      if (err !== CANCELLED) throw err;
     }
-    const step = CALIBRATION_STEPS[calibrationPhase];
-    speak(step.prompt);
-    if (step.next === null) return;
-    const next = step.next;
-    const timer = setTimeout(() => setCalibrationPhase(next), step.seconds * 1000);
+  }, [sendCalibration]);
+
+  // Start calibrating on the first landmark message with a face
+  useEffect(() => {
+    if (faceSeen && calibrationStatus === 'waiting') runCalibration();
+  }, [faceSeen, calibrationStatus, runCalibration]);
+
+  // No reply to "done" in time: start the session with whatever the backend has
+  useEffect(() => {
+    if (calibrationStatus !== 'checking') return;
+    const timer = setTimeout(() => setCalibrationStatus((current) => current === 'checking' ? 'done' : current),
+      CALIBRATION_REPLY_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [calibrationPhase, backendConnected]);
+  }, [calibrationStatus]);
+
+  // Stop any running calibration (and its speech) when leaving the page
+  useEffect(() => cancelCalibration, [cancelCalibration]);
+
+  const redoCalibration = () => {
+    cancelCalibration();
+    runCalibration();
+  };
+
+  const skipCalibration = () => {
+    cancelCalibration();
+    // The backend drops any samples, keeps the default range, and restarts its session clock with ours
+    sendCalibration('done', { skipped: true });
+    setCalibrationView(IDLE_VIEW);
+    setCalibrationStatus('done');
+  };
+
+  const answerSecondScreen = (yes: boolean) => secondScreenAnswerRef.current?.(yes);
 
 const handleEndSession = () => {
     if (DEBUG_LOGS) console.log("🚀 Ending Study Session...");
@@ -525,49 +680,72 @@ const handleEndSession = () => {
       </div>
 
       {/* Calibration overlay: covers the session until calibration is done or skipped */}
-      {calibrationPhase !== 'done' && (() => {
-        const step = CALIBRATION_STEPS[calibrationPhase];
-        return (
-          <div className="fixed inset-0 z-[60] bg-gray-900/95 backdrop-blur-sm">
-            {backendConnected && step.dot && (
-              <div className={`absolute w-6 h-6 rounded-full bg-cyan-400 shadow-lg shadow-cyan-400/50 ${CALIBRATION_DOT_POSITION[step.dot]}`} />
-            )}
+      {calibrationStatus !== 'done' && (
+        <div className="fixed inset-0 z-[60] bg-gray-900/95 backdrop-blur-sm">
+          {calibrationView.dot !== 'none' && <ScanDot moving={calibrationView.dot === 'moving'} />}
 
-            <div className="absolute inset-x-0 top-1/4 px-6 text-center">
-              <div className="text-sm text-blue-300 font-medium mb-2">Screen calibration</div>
-              <div className="text-2xl text-white font-semibold">
-                {backendConnected ? step.prompt : 'Connecting to the backend...'}
-              </div>
+          <div className="absolute inset-x-0 top-1/4 px-6 text-center">
+            <div className="text-sm text-blue-300 font-medium mb-2">Screen calibration</div>
+            <div className="text-2xl text-white font-semibold">
+              {calibrationStatus === 'waiting'
+                ? 'Looking for your face...'
+                : calibrationStatus === 'failed'
+                  ? "Your eyes didn't move enough to measure your screen."
+                  : calibrationView.prompt}
             </div>
-
-            {backendConnected && calibrationPhase === 'choice' && (
-              <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center gap-4 px-6">
-                <button
-                  onClick={() => setCalibrationPhase('second_screen')}
-                  className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300"
-                >
-                  I use a second screen
-                </button>
-                <button
-                  onClick={() => setCalibrationPhase('done')}
-                  className="bg-gray-800/80 hover:bg-gray-700/80 border border-blue-500/30 text-white px-6 py-3 rounded-xl font-medium transition-all duration-300"
-                >
-                  No second screen
-                </button>
+            {calibrationStatus === 'failed' && (
+              <div className="mt-2 text-gray-300">
+                Using the default screen range for now. Redo the calibration, or skip to start the session.
               </div>
             )}
+            {calibrationView.countdown !== null && (
+              <div className="mt-6 text-6xl text-cyan-300 font-bold">{calibrationView.countdown}</div>
+            )}
+            {calibrationView.recording && (
+              <div className="mt-6 inline-flex items-center space-x-2 text-red-300 text-sm font-medium">
+                <span className="w-2 h-2 bg-red-400 rounded-full animate-pulse"></span>
+                <span>Recording</span>
+              </div>
+            )}
+          </div>
 
-            <div className="absolute bottom-8 inset-x-0 flex justify-center">
+          {calibrationView.asking && (
+            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center gap-4 px-6">
               <button
-                onClick={() => setCalibrationPhase('done')}
-                className="text-gray-400 hover:text-white text-sm underline underline-offset-4 transition-colors"
+                onClick={() => answerSecondScreen(true)}
+                className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300"
               >
-                Skip calibration
+                Yes
+              </button>
+              <button
+                onClick={() => answerSecondScreen(false)}
+                className="bg-gray-800/80 hover:bg-gray-700/80 border border-blue-500/30 text-white px-6 py-3 rounded-xl font-medium transition-all duration-300"
+              >
+                No
               </button>
             </div>
+          )}
+
+          <div className="absolute bottom-8 inset-x-0 flex justify-center gap-6">
+            {calibrationStatus !== 'waiting' && (
+              <button
+                onClick={redoCalibration}
+                className={calibrationStatus === 'failed'
+                  ? 'bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300'
+                  : 'text-gray-400 hover:text-white text-sm underline underline-offset-4 transition-colors'}
+              >
+                Redo calibration
+              </button>
+            )}
+            <button
+              onClick={skipCalibration}
+              className="text-gray-400 hover:text-white text-sm underline underline-offset-4 transition-colors"
+            >
+              Skip
+            </button>
           </div>
-        );
-      })()}
+        </div>
+      )}
 
       {/* Hidden canvas for frame processing */}
       <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
