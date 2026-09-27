@@ -1,15 +1,16 @@
 from fastapi import APIRouter
-from cv_project.study_mode import get_focus_data, get_session_duration
+from ws_routes.study_ws import latest_session
 
 router = APIRouter()
 
 @router.get("/post-session")
 async def get_summary_data(chart_type: str):
-    session_duration = get_session_duration()
+    # The most recent session's scores, one per scored landmark message (cv_project/landmark_pipeline.py)
+    session = latest_session()
+    focus_scores = session.gaze_scores if session else []
+    session_duration = session.session_duration if session else 0
 
-    if chart_type == "focus": 
-        focus_scores = get_focus_data()
-
+    if chart_type == "focus":
         if not focus_scores or session_duration == 0:
             print("⚠️ No focus data available. Returning empty chart.")
             return {
@@ -41,8 +42,6 @@ async def get_summary_data(chart_type: str):
         }
     
     elif chart_type == "focus-donut":
-        focus_scores = get_focus_data()
-
         focused = sum(1 for item in focus_scores if item > 40)
         distracted = len(focus_scores) - focused
 

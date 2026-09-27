@@ -20,7 +20,7 @@ export function getFaceLandmarker(): Promise<FaceLandmarker> {
         runningMode: "VIDEO",
         outputFaceBlendshapes: true,
         outputFacialTransformationMatrixes: true,
-        numFaces: 2, // matches max_num_faces=2 in the Python backend
+        numFaces: 2, // so the backend can flag a second face (faceCount > 1)
       });
     })();
     // Allow a retry on the next call if initialization failed

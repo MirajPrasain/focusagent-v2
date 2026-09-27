@@ -1,51 +1,29 @@
 import json
 import logging
 import time
-from collections import deque, namedtuple
 
 import numpy as np
 
-from cv_project.geometry import eye_openness, head_down_ratio
-from cv_project.study_mode import get_focus_score, get_iris_ratios, has_all_landmarks, new_scoring_state
-from cv_project.distraction_classifier import classify_distraction, DISTRACTION_WEIGHTS
+from cv_project.geometry import eye_openness, get_iris_ratios, has_all_landmarks, head_down_ratio
 
 logger = logging.getLogger(__name__)
 
-# Landmark JSON pipeline (text messages): the browser runs MediaPipe itself and sends landmark points plus
-# eye blendshapes for each detection. This is the pipeline that will replace JPEG frame scoring. For now its
-# results are only logged next to the JPEG frame score (ws_routes/score_comparison.py), never sent to the client.
+# Landmark pipeline: the browser runs MediaPipe itself and sends landmark points, eye blendshapes, head pose and
+# the number of faces it found as JSON text messages on /ws/study (ws_routes/study_ws.py). This module turns them
+# into the live focus score.
 #
 #   landmark message
-#     ├── points      -> get_focus_score()        rule-based score
-#     │               -> get_iris_ratios()        logged only
-#     ├── headPose    -> yaw/pitch in degrees     logged only
-#     ├── headPose yaw + eye blendshapes -> gaze_yaw -> get_gaze_score()   logged only
-#     └── blendshapes -> classify_distraction()   raw probability ─┐
-#                     -> eyes-closed window (PERCLOS) (1.0 if closed) ─┴-> EMA (smoothed_prob)
+#     ├── headPose yaw + eye blendshapes -> gaze_yaw
+#     └── points + gaze_yaw + faceCount   -> get_gaze_score() -> {"score", "cheat_events"} sent to the client
+#                                                             -> gaze_scores, read by the post-session charts
 #
 #   calibration message {"phase": ...} (start of the session, see CALIBRATION_RECORDING_PHASES)
 #     until "done", landmark messages only collect gaze_yaw (during recordings); nothing is scored
-#     "done" -> screen_ranges that get_gaze_score() checks gaze_yaw against, and a reply to the client
-
-# EMA over per-message classifier probabilities: a single-frame spike (a blink, a momentary glance)
-# gets pulled toward the recent average instead of flagging outright, while sustained distraction
-# still pushes the smoothed value across the threshold within roughly 1-2s at the current message rate.
-# SMOOTHING_ALPHA is the one knob to tune: higher reacts faster, lower filters more noise.
-SMOOTHING_ALPHA = 0.15
-
-# Eyes-closed rule (PERCLOS: percentage of eyelid closure over a rolling window). The classifier only sees gaze,
-# so a single blink can't flag distraction. Instead, if at least EYES_CLOSED_RATIO of the last EYES_CLOSED_WINDOW
-# messages (~2s at 5 messages/s) had closed eyes, the message counts as maximally distracted (1.0), the same way
-# no-face is handled. Unlike a consecutive-frame counter, one noisy "open" reading mid-closure doesn't reset it.
-# A frame counts as closed when (eyeBlinkLeft + eyeBlinkRight) / 2 is above EYES_CLOSED_THRESHOLD.
-EYES_CLOSED_THRESHOLD = 0.5
-EYES_CLOSED_WINDOW = 10
-EYES_CLOSED_RATIO = 0.7
+#     "done" -> screen_ranges that get_gaze_score() checks gaze_yaw against, a reply to the client, and the
+#               session clock starts: messages are scored until session_duration has passed
 
 # Horizontal gaze angle = head yaw corrected by how far the eyes are turned in their sockets:
 #   eye_turn = (eyeLookInLeft + eyeLookOutRight - eyeLookInRight - eyeLookOutLeft) / 2, positive = eyes to the user's right
-# Vertical counterpart, logged only for now (no vertical gaze angle or scoring yet):
-#   eye_pitch = (eyeLookUpLeft + eyeLookUpRight - eyeLookDownLeft - eyeLookDownRight) / 2, positive = eyes up
 #   gaze_yaw = head_yaw - EYE_TO_HEAD_DEG * eye_turn   (head_yaw positive = head turned to the user's left)
 # EYE_TO_HEAD_DEG converts eye_turn to degrees; a fixed guess until per-user calibration replaces it.
 EYE_TO_HEAD_DEG = 33
@@ -74,71 +52,89 @@ CALIBRATION_PERCENTILES = (5, 95)
 SCREEN_MARGIN_DEG = 3
 SECOND_SCREEN_MARGIN_DEG = 5
 MIN_MAIN_RANGE_DEG = 6
-# Looking off screen alone leaves 100 - 70 = 30, below the score < 40 distraction cutoff (study_mode.py)
+
+# A score below DISTRACTED_BELOW counts as distracted (cheat event EVENT_LOW_SCORE)
+DISTRACTED_BELOW = 40
+# Looking off screen alone leaves 100 - 70 = 30, below DISTRACTED_BELOW
 GAZE_OFF_SCREEN_PENALTY = 70
+# Eyes closed: an eye aspect ratio below EYES_CLOSED_EAR for EYES_CLOSED_FRAMES landmark messages in a row
+EYES_CLOSED_EAR = 0.2
+EYES_CLOSED_FRAMES = 3
+# Looking down: head_down_ratio above this
+LOOKING_DOWN_RATIO = 1.4
 
-# What one landmark message produced. Each field is None when that part couldn't be computed.
-#   focus_score: get_focus_score on the points
-#   probability: raw classifier probability (1.0 when no face was detected or the eyes-closed rule fired)
-#   blendshapes: both eyeBlink values plus the gaze features the classifier saw (None when no face was detected)
-#   head_pose: (yaw, pitch) in degrees from the browser's facial transformation matrix
-#   iris_ratios: (horizontal, vertical) from get_iris_ratios on the points
-#   eye_turn, gaze_yaw, eye_pitch: see EYE_TO_HEAD_DEG
-#   gaze_score: get_gaze_score on the points and gaze_yaw (None during calibration: nothing is scored then)
-LandmarkReading = namedtuple(
-    "LandmarkReading",
-    ["focus_score", "probability", "blendshapes", "head_pose", "iris_ratios", "eye_turn", "gaze_yaw", "gaze_score",
-     "eye_pitch"],
-    defaults=[None] * 6,
-)
+# cheat_events codes. Each scored message carries the events that fired on it; the client only checks whether
+# the list is empty
+EVENT_LOOKING_DOWN = 1
+EVENT_OFF_SCREEN = 2
+EVENT_MULTIPLE_FACES = 3
+EVENT_EYES_CLOSED = 4
+EVENT_LOW_SCORE = 5
+
+# Sent instead of a score once session_duration has passed
+SESSION_ENDED = "Session Ended"
 
 
-def get_gaze_score(landmarks, gaze_yaw, state, screen_ranges=(DEFAULT_SCREEN_RANGE,)):
-    """get_focus_score with its horizontal rules (head turn, horizontal iris) replaced by one gaze_yaw rule:
-    off screen unless gaze_yaw is inside one of screen_ranges ((low, high) pairs, in degrees).
-    The vertical rules, the eyes-closed check and no-face are copied from get_focus_score unchanged.
-    Returns None when gaze_yaw is None, since the horizontal direction can't be judged."""
+def get_gaze_score(landmarks, gaze_yaw, state, screen_ranges=(DEFAULT_SCREEN_RANGE,), face_count=1):
+    """Scores one landmark message. Returns (score, cheat_events), or (None, []) when gaze_yaw is None, since the
+    horizontal direction can't be judged.
+    The score starts at 100 and loses GAZE_OFF_SCREEN_PENALTY when gaze_yaw is outside every (low, high) range in
+    screen_ranges (degrees), plus the vertical rules' penalties. It's 0 with no face, or once the eyes have been
+    closed for EYES_CLOSED_FRAMES messages in a row (state["blink_counter"] keeps the streak)."""
     if not has_all_landmarks(landmarks):
-        return 0
+        return 0, [EVENT_LOW_SCORE]
     if gaze_yaw is None:
-        return None
+        return None, []
 
     eye_aspect_ratio = eye_openness(landmarks[159], landmarks[145], landmarks[33], landmarks[133])
     _, iris_vertical = get_iris_ratios(landmarks)
     head_down_value = head_down_ratio(landmarks[1], landmarks[152], landmarks[151])
 
+    events = []
+    if face_count > 1:
+        events.append(EVENT_MULTIPLE_FACES)
+
     focus = 100
     if not any(low <= gaze_yaw <= high for low, high in screen_ranges):
         focus -= GAZE_OFF_SCREEN_PENALTY
+        events.append(EVENT_OFF_SCREEN)
+    # Vertical rules: iris high or low in the eye, head tipped up or down
     if iris_vertical < 0.25 or iris_vertical > 0.75:
         focus -= 50
     if head_down_value > 1.3 or head_down_value < 0.75:
         focus -= 50
     if iris_vertical < 0.4 or iris_vertical > 0.6:
         focus -= 30
+    if head_down_value > LOOKING_DOWN_RATIO:
+        events.append(EVENT_LOOKING_DOWN)
 
-    # Eyes closed: same blink-streak check as get_focus_score, on this scorer's own state
-    if eye_aspect_ratio < 0.2:
+    # Eyes closed: a streak, so a single blink doesn't count
+    if eye_aspect_ratio < EYES_CLOSED_EAR:
         state["blink_counter"] += 1
-        if state["blink_counter"] >= 3:
-            return 0
     else:
         state["blink_counter"] = 0
+    if state["blink_counter"] >= EYES_CLOSED_FRAMES:
+        focus = 0
+        events.append(EVENT_EYES_CLOSED)
 
-    return max(0, focus)
+    score = max(0, focus)
+    if score < DISTRACTED_BELOW:
+        events.append(EVENT_LOW_SCORE)
+    return score, events
 
 
 class LandmarkPipeline:
-    """Per-connection state for the landmark JSON pipeline."""
+    """One study session (one /ws/study connection): calibration, the live score, and the session's scores for
+    the post-session charts (ws_routes/charts.py)."""
 
-    def __init__(self):
-        # Own scoring state, so it can't disturb the JPEG frame pipeline's blink counter
-        self.scoring_state = new_scoring_state()
-        # get_gaze_score keeps its own blink streak, so the two scorers don't double-count a frame
-        self.gaze_scoring_state = new_scoring_state()
-        self.smoothed_prob = None
-        # Closed/open status of the last EYES_CLOSED_WINDOW messages, for the eyes-closed rule
-        self.eyes_closed_window = deque(maxlen=EYES_CLOSED_WINDOW)
+    def __init__(self, session_duration):
+        # Session length in seconds. The session clock starts when calibration ends or is skipped
+        self.session_duration = session_duration
+        self.session_started = None  # time.monotonic() when the session clock started, None until then
+        # Every score sent to the client this session, in order
+        self.gaze_scores = []
+        # get_gaze_score's eyes-closed streak
+        self.scoring_state = {"blink_counter": 0}
         # Calibration: the running phase (None when not calibrating), when its recording started, gaze_yaw samples
         # per recording ("main", or "second_screen/<point>" for each second-screen point), and the (low, high)
         # gaze_yaw ranges that count as on screen
@@ -147,41 +143,47 @@ class LandmarkPipeline:
         self.recording_key = None
         self.calibration_samples = {}
         self.screen_ranges = [DEFAULT_SCREEN_RANGE]
-
-    @property
-    def closed_count(self):
-        """How many of the last EYES_CLOSED_WINDOW messages had closed eyes."""
-        return sum(self.eyes_closed_window)
+        # For the once-per-second DEBUG line
+        self.created = time.monotonic()
+        self.last_log = None
 
     def handle_text_message(self, text):
-        """Handles one text message. Returns (reading, reply): reading is the LandmarkReading of a landmark message
-        (None for a calibration message), reply is a dict to send to the client (the calibration result on "done")."""
+        """Handles one text message and returns the text to send back to the client, or None: the calibration
+        result for the calibration "done" message, {"score", "cheat_events"} for a scored landmark message, and
+        SESSION_ENDED for a landmark message after the session is over."""
         try:
             message = json.loads(text)
         except json.JSONDecodeError as e:
             logger.warning(f"Invalid landmark JSON: {e}")
-            return LandmarkReading(None, None, None), None
+            return None
         if message.get("type") == "calibration":
-            return None, self.handle_calibration_message(message)
+            reply = self.handle_calibration_message(message)
+            return None if reply is None else json.dumps(reply)
         if message.get("type") != "landmarks":
             logger.warning(f"Unknown text message: {message}")
-            return LandmarkReading(None, None, None), None
-        return self.handle_landmark_message(message), None
+            return None
+        return self.handle_landmark_message(message)
 
     def handle_calibration_message(self, message):
-        """Switches the calibration phase. On "done" returns the calibration result for the client, else None."""
+        """Switches the calibration phase. On "done" starts the session and returns the calibration result for the
+        client, else returns None."""
         phase = message.get("phase")
         if phase == "main":
             self.calibration_samples = {}  # a new calibration run (or a redo) starts from scratch
         if phase == "idle" or phase in CALIBRATION_RECORDING_PHASES:
             self.calibration_phase = phase
+            self.session_started = None  # calibrating (again, on a redo): no session clock until "done"
             self.recording_started = time.monotonic()
             self.recording_key = f"second_screen/{message.get('point', 'unknown')}" if phase == "second_screen" else phase
         elif phase == "done":
             self.calibration_phase = None
             if message.get("skipped"):
                 self.calibration_samples = {}
-            return self.finish_calibration()
+            result = self.finish_calibration()
+            # The browser starts its session timer now, so the session clock and its scores start over here too
+            self.session_started = time.monotonic()
+            self.gaze_scores = []
+            return result
         else:
             logger.warning(f"Unknown calibration phase: {message}")
         return None
@@ -236,95 +238,59 @@ class LandmarkPipeline:
         return {"type": "calibration", "status": status, "main": list(main), "second": list(second) if second else None}
 
     def handle_landmark_message(self, message):
-        """Scores and classifies one parsed landmark message, updates smoothed_prob, and returns a LandmarkReading.
-        During calibration it only collects gaze_yaw for the running phase and scores nothing."""
+        """Computes gaze_yaw for one parsed landmark message. During calibration it only collects gaze_yaw for the
+        running phase; once the session has started it scores the message, records the score and returns the reply
+        (see handle_text_message)."""
         points = {}
         try:
             points = {int(idx): tuple(xy) for idx, xy in (message.get("points") or {}).items()}
         except Exception as e:
             logger.warning(f"Invalid landmark points: {e}")
 
-        # Head pose. null when the browser had no transformation matrix, i.e. no face
-        head_pose = None
-        pose = message.get("headPose")
-        if pose:
-            try:
-                head_pose = (float(pose["yaw"]), float(pose["pitch"]))
-            except (KeyError, TypeError, ValueError) as e:
-                logger.warning(f"Invalid headPose {pose}: {e}")
-
-        # Head yaw + eye blendshapes -> gaze angle (+ eye_pitch, logged only)
-        eye_turn = None
-        eye_pitch = None
+        # Head yaw (headPose is null when the browser had no transformation matrix, i.e. no face)
+        # + eye blendshapes -> gaze angle
         gaze_yaw = None
-        try:
-            blendshapes = message.get("blendshapes") or {}
-            if blendshapes:
+        pose = message.get("headPose")
+        blendshapes = message.get("blendshapes") or {}
+        if pose and blendshapes:
+            try:
                 look = {name: float(blendshapes.get(name, 0)) for name in
-                        ("eyeLookInLeft", "eyeLookOutRight", "eyeLookInRight", "eyeLookOutLeft",
-                         "eyeLookUpLeft", "eyeLookUpRight", "eyeLookDownLeft", "eyeLookDownRight")}
+                        ("eyeLookInLeft", "eyeLookOutRight", "eyeLookInRight", "eyeLookOutLeft")}
                 eye_turn = (look["eyeLookInLeft"] + look["eyeLookOutRight"]
                             - look["eyeLookInRight"] - look["eyeLookOutLeft"]) / 2
-                eye_pitch = (look["eyeLookUpLeft"] + look["eyeLookUpRight"]
-                             - look["eyeLookDownLeft"] - look["eyeLookDownRight"]) / 2
-                if head_pose is not None:
-                    gaze_yaw = head_pose[0] - EYE_TO_HEAD_DEG * eye_turn
-        except Exception as e:
-            logger.warning(f"Gaze angle failed: {e}")
+                gaze_yaw = float(pose["yaw"]) - EYE_TO_HEAD_DEG * eye_turn
+            except (KeyError, TypeError, ValueError) as e:
+                logger.warning(f"Gaze angle failed for headPose {pose}: {e}")
 
-        # Calibrating: collect gaze_yaw while a recording runs (after its settle time) and score nothing
+        score = None
+        reply = None
         if self.calibration_phase is not None:
+            # Calibrating: collect gaze_yaw while a recording runs (after its settle time) and score nothing
             settled = time.monotonic() - self.recording_started >= CALIBRATION_SETTLE_S
             if gaze_yaw is not None and self.calibration_phase in CALIBRATION_RECORDING_PHASES and settled:
                 self.calibration_samples.setdefault(self.recording_key, []).append(gaze_yaw)
-            return LandmarkReading(None, None, None, head_pose, None, eye_turn, gaze_yaw, None, eye_pitch)
-
-        # Points -> rule-based focus score (+ iris ratios, logged only)
-        focus_score = None
-        iris_ratios = None
-        try:
-            focus_score, _ = get_focus_score(points, self.scoring_state)
-            if has_all_landmarks(points):
-                iris_ratios = get_iris_ratios(points)
-        except Exception as e:
-            logger.warning(f"Landmark scoring failed: {e}")
-
-        # Gaze angle -> gaze score against the (calibrated) screen ranges (logged only)
-        gaze_score = None
-        try:
-            gaze_score = get_gaze_score(points, gaze_yaw, self.gaze_scoring_state, self.screen_ranges)
-        except Exception as e:
-            logger.warning(f"Gaze scoring failed: {e}")
-
-        # Blendshapes -> distraction classifier + eyes-closed rule
-        # Blendshapes are empty when no face was detected: treat that as maximally distracted (prob 1.0)
-        # and feed it through the same smoothing path as a real classifier reading
-        blendshapes = message.get("blendshapes") or {}
-        probability = None
-        features = None
-        if not blendshapes:
-            probability = 1.0
-            self.eyes_closed_window.clear()  # can't see the eyes, so a closed stretch can't continue across it
+        elif self.session_started is None:
+            pass  # calibration hasn't run yet: nothing to score against
+        elif time.monotonic() - self.session_started > self.session_duration:
+            reply = SESSION_ENDED
         else:
             try:
-                blink = {name: float(blendshapes.get(name, 0)) for name in ("eyeBlinkLeft", "eyeBlinkRight")}
-                eyes_closed = (blink["eyeBlinkLeft"] + blink["eyeBlinkRight"]) / 2 > EYES_CLOSED_THRESHOLD
-                self.eyes_closed_window.append(eyes_closed)
-                if all(name in blendshapes for name in DISTRACTION_WEIGHTS):
-                    gaze = {name: float(blendshapes[name]) for name in DISTRACTION_WEIGHTS}
-                    probability, _ = classify_distraction(gaze) #call classify distraction
-                    features = {**blink, **gaze}
+                score, cheat_events = get_gaze_score(points, gaze_yaw, self.scoring_state, self.screen_ranges,
+                                                     message.get("faceCount") or 0)
             except Exception as e:
-                logger.warning(f"Classifier failed: {e}")
-            if self.closed_count / EYES_CLOSED_WINDOW >= EYES_CLOSED_RATIO:
-                probability = 1.0
+                logger.warning(f"Gaze scoring failed: {e}")
+            if score is not None:
+                self.gaze_scores.append(score)
+                reply = json.dumps({"score": score, "cheat_events": cheat_events})
 
-        # Raw probability -> EMA
-        if probability is not None:
-            if self.smoothed_prob is None:
-                self.smoothed_prob = probability
-            else:
-                self.smoothed_prob = SMOOTHING_ALPHA * probability + (1 - SMOOTHING_ALPHA) * self.smoothed_prob
+        self.log_if_due(gaze_yaw, score)
+        return reply
 
-        return LandmarkReading(focus_score, probability, features, head_pose, iris_ratios, eye_turn, gaze_yaw, gaze_score,
-                               eye_pitch)
+    def log_if_due(self, gaze_yaw, score):
+        """At most once per second: one DEBUG line with the latest gaze_yaw and score (n/a when not computed)."""
+        now = time.monotonic()
+        if self.last_log is not None and now - self.last_log < 1:
+            return
+        self.last_log = now
+        gaze_text = "n/a" if gaze_yaw is None else f"{gaze_yaw:.1f}"
+        logger.debug(f"t={now - self.created:.1f}s gaze_yaw={gaze_text} score={'n/a' if score is None else score}")

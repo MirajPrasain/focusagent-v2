@@ -1,8 +1,9 @@
 """
 Offline training script for the focused/distracted eye-blendshape classifier.
 
-Not part of the FastAPI app. Run once against CSVs exported from the
-frontend DataCollect tool, then copy the printed weights into the backend.
+Not part of the FastAPI app, and the classifier is not used live: the calibrated
+gaze score replaced it. Results and why it lost: backend/experiments/CLASSIFIER_EXPERIMENT.md.
+Run against CSVs exported from the frontend DataCollect tool.
 
 Usage:
     python backend/scripts/train_classifier.py data1.csv data2.csv [...]
@@ -26,8 +27,8 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 
-# Gaze only. Blinks are left out: they fired on ordinary blinks during focus, so eyes-closed is handled
-# by a duration rule in cv_project/landmark_pipeline.py instead.
+# Gaze only. Blinks are left out: they fired on ordinary blinks during focus, so eyes-closed was handled
+# by a separate duration rule instead.
 BLINK_FEATURES = ["eyeBlinkLeft", "eyeBlinkRight"]
 FEATURES = [
     "eyeLookDownLeft",

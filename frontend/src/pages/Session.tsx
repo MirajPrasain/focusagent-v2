@@ -4,10 +4,10 @@ import { Square, RotateCcw } from 'lucide-react';
 import { detectFaces } from '../lib/faceLandmarker'
 import { speak, speakAndWait, sleep } from '../lib/speech'
 
-// Set to true to re-enable websocket/TTS/session console logs (FaceLandmarker test logs are unaffected)
+// Set to true to re-enable websocket/TTS/session console logs
 const DEBUG_LOGS = false;
 
-// Screen calibration, run once a face is seen and before the session timer starts.
+// Screen calibration, started from the "Start calibration" button in full screen, before the session timer starts.
 // Every timed step: speak the instruction, wait for speech to end, voice countdown "3, 2, 1", record, "okay".
 // The backend (backend/cv_project/landmark_pipeline.py) is told {"type": "calibration", "phase": ...}:
 // "main" / "second_screen" when a recording starts, "idle" whenever it isn't recording, "done" at the end.
@@ -26,7 +26,7 @@ const SECOND_SCREEN_POINTS = [
   { id: 'center', label: 'center' },
 ];
 
-// waiting: no face yet; running: the steps below; checking: waiting for the backend's result;
+// waiting: for the Start calibration button; running: the steps below; checking: waiting for the backend's result;
 // failed: the backend found the scan too narrow; done: overlay closed, session timer running
 type CalibrationStatus = 'waiting' | 'running' | 'checking' | 'failed' | 'done';
 
@@ -42,6 +42,16 @@ const IDLE_VIEW: CalibrationView = { prompt: '', dot: 'none', countdown: null, r
 
 // Thrown inside a calibration run that was cancelled (skip, redo or unmount) to stop it at its next step
 const CANCELLED = Symbol('calibration cancelled');
+
+// Calibration runs in full screen so the scan covers the whole screen. A refused request (browser policy)
+// leaves the page windowed and calibration runs anyway.
+function enterFullscreen() {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+}
+
+function exitFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
 
 // Point on the screen border (percent of the viewport) at fraction t of one lap, starting top left:
 // top edge left to right, right edge down, bottom edge right to left, left edge up
@@ -93,8 +103,6 @@ function Session() {
   const goal = decodeURIComponent(searchParams.get("goal") || "");
 
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const frameIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
   const [status, setStatus] = useState("--");
@@ -133,13 +141,12 @@ function Session() {
       });
   }, []);
 
-  // TEMP: browser-side MediaPipe FaceLandmarker console test (not wired into scoring/websocket)
+  // Browser-side MediaPipe: every 200ms, detect the face and send a landmark message on the study websocket.
+  // The backend (backend/cv_project/landmark_pipeline.py) scores it and replies with {score, cheat_events}.
   useEffect(() => {
-    // Detection still runs every 200ms; console output is throttled for readability
-    const LOG_INTERVAL_MS = 1000;
-    // Same indices backend/cv_project/study_mode.py uses for scoring
+    // Same indices as LANDMARK_INDICES in backend/cv_project/geometry.py
     const LANDMARK_INDICES = [159, 145, 33, 133, 468, 1, 234, 454, 152, 151];
-    // 8 gaze features for backend/cv_project/distraction_classifier.py, plus the 2 eyeBlink values for the eyes-closed rule in cv_project/landmark_pipeline.py
+    // Eye blendshapes; the backend's gaze angle uses the four eyeLookIn/eyeLookOut values
     const BLENDSHAPE_NAMES = [
       'eyeBlinkLeft', 'eyeBlinkRight',
       'eyeLookDownLeft', 'eyeLookDownRight',
@@ -149,8 +156,6 @@ function Session() {
     ];
     let busy = false;
     let lastTimestamp = -1;
-    let lastLogTime = -Infinity;
-
 
     const interval = setInterval(async () => {
       const video = videoRef.current;
@@ -169,7 +174,7 @@ function Session() {
       try {
         const result = await detectFaces(video, timestamp);
 
-        // Send pixel-space landmarks as a separate text message on the study websocket (logged only on backend for now)
+        // Send pixel-space landmarks as a text message on the study websocket
         const socket = socketRef.current;
         if (socket && socket.readyState === WebSocket.OPEN) {
           const w = video.videoWidth;
@@ -184,7 +189,7 @@ function Session() {
               if (lm) points[idx] = [Math.trunc(lm.x * w), Math.trunc(lm.y * h)]; //adds points to the array 
             }
           }
-          // Eye blendshapes for the backend's classify_distraction() comparison (empty when no face)
+          // Eye blendshapes (empty when no face)
           const categories = result.faceBlendshapes[0]?.categories;
           const blendshapes: Record<string, number> = {};
           if (categories) {
@@ -211,48 +216,14 @@ function Session() {
               points,
               blendshapes,
               headPose }));
-          // The first landmark message with a face starts the calibration
+          // The first landmark message with a face enables the Start calibration button
           if (face && !faceSeenRef.current) {
             faceSeenRef.current = true;
             setFaceSeen(true);
           }
         }
-
-        // Debug console output only in local dev; silent in production builds
-        if (import.meta.env.DEV) {
-          if (timestamp - lastLogTime < LOG_INTERVAL_MS) return;
-          lastLogTime = timestamp;
-
-          console.group(`🧪 [FaceLandmarker] faces detected: ${result.faceLandmarks.length}`);
-
-          const face = result.faceLandmarks[0];
-          if (face) {
-            // Horizontal nose-to-temple distances: 234 = left temple, 1 = nose, 454 = right temple
-            const leftDist = Math.abs(face[234].x - face[1].x);
-            const rightDist = Math.abs(face[454].x - face[1].x);
-            const headTurnRatio = leftDist / rightDist;
-            console.log(`Head turn ratio: ${headTurnRatio.toFixed(2)} (near 1.0 = facing forward, higher = turned right, lower = turned left)`);
-          }
-
-          const blendshapes = result.faceBlendshapes[0]?.categories;
-          if (blendshapes) {
-            const score = (name: string) => blendshapes.find((c) => c.categoryName === name)?.score ?? 0;
-            const blinkL = score('eyeBlinkLeft');
-            const blinkR = score('eyeBlinkRight');
-            const up = score('eyeLookUpLeft');
-            const down = score('eyeLookDownLeft');
-            const in_ = score('eyeLookInLeft');
-            const out = score('eyeLookOutLeft');
-            const smileL = score('mouthSmileLeft');
-            const smileR = score('mouthSmileRight');
-            console.log(`Blink: L=${blinkL.toFixed(2)} R=${blinkR.toFixed(2)} | Gaze: up=${up.toFixed(2)} down=${down.toFixed(2)} in=${in_.toFixed(2)} out=${out.toFixed(2)} | Smile: L=${smileL.toFixed(2)} R=${smileR.toFixed(2)}`);
-          }
-
-          console.log('facialTransformationMatrixes:', result.facialTransformationMatrixes);
-          console.groupEnd();
-        }
       } catch (err) {
-        console.error('🧪 [FaceLandmarker] detection error:', err);
+        console.error('[FaceLandmarker] detection error:', err);
       } finally {
         busy = false;
       }
@@ -297,7 +268,7 @@ useEffect(() => {
   }]);
 }, [distraction]);
 
-  // Setup WebSocket connection and frame sending
+  // Setup WebSocket connection (the landmark effect above sends on it)
   useEffect(() => {
     if (DEBUG_LOGS) console.log('🔌 Attempting to connect to MediaPipe backend:', MEDIAPIPE_API_URL);
     const protocol = MEDIAPIPE_API_URL.startsWith('https://') ? 'wss://' : 'ws://';
@@ -307,41 +278,14 @@ useEffect(() => {
     const socket = new WebSocket(wsUrl);
     socketRef.current = socket;
 
-    //Every 200ms (5 fps): draw the video onto the hidden <canvas>, canvas.toBlob(..., "image/jpeg", 0.8), and socket.send(blob) as a binary message.
-
     socket.onopen = () => {
       if (DEBUG_LOGS) console.log("✅ Connected to backend Study WebSocket server");
       socket.send(JSON.stringify({ duration }));
       setStatus("Connected");
       setBackendConnected(true);
-
-      frameIntervalRef.current = setInterval(() => {
-        if (
-          socket.readyState === WebSocket.OPEN &&
-          videoRef.current &&
-          canvasRef.current
-        ) {
-          const video = videoRef.current as HTMLVideoElement;
-          const canvas = canvasRef.current as HTMLCanvasElement;
-
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-
-          const ctx = canvas.getContext("2d");
-          if (!ctx) return;
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-          // ✅ Send as Blob (binary), not DataURL
-          canvas.toBlob((blob) => {
-            if (blob && socket.readyState === WebSocket.OPEN) {
-              socket.send(blob);
-            }
-          }, "image/jpeg", 0.8);
-        }
-      }, 200);
     };
 
-    //onmessage receives {score, cheat_events} back and drives the UI: focus score box, "Distraction detected" badge, status text. This is the only path whose output the user sees.
+    //onmessage receives {score, cheat_events} back and drives the UI: focus score box, "Distraction detected" badge, status text.
 
     socket.onmessage = (event) => {
       try {
@@ -359,7 +303,6 @@ useEffect(() => {
           const errorMessages: Record<string, string> = {
             invalid_json: "Invalid session data, please reconnect...",
             duration_error: "Session duration error, please reconnect...",
-            frame_processing_failed: "Frame processing issue, retrying...",
             websocket_error: "Connection issue, retrying...",
           };
           setStatus(errorMessages[data.error] || `Backend error: ${data.error}`);
@@ -411,7 +354,6 @@ useEffect(() => {
     };
 
     return () => {
-      if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
       if (socketRef.current) socketRef.current.close();
     };
   }, [duration, MEDIAPIPE_API_URL]);
@@ -495,11 +437,6 @@ useEffect(() => {
     }
   }, [sendCalibration]);
 
-  // Start calibrating on the first landmark message with a face
-  useEffect(() => {
-    if (faceSeen && calibrationStatus === 'waiting') runCalibration();
-  }, [faceSeen, calibrationStatus, runCalibration]);
-
   // No reply to "done" in time: start the session with whatever the backend has
   useEffect(() => {
     if (calibrationStatus !== 'checking') return;
@@ -508,11 +445,21 @@ useEffect(() => {
     return () => clearTimeout(timer);
   }, [calibrationStatus]);
 
-  // Stop any running calibration (and its speech) when leaving the page
-  useEffect(() => cancelCalibration, [cancelCalibration]);
+  // Leave full screen once calibration is finished or skipped
+  useEffect(() => {
+    if (sessionStarted) exitFullscreen();
+  }, [sessionStarted]);
 
-  const redoCalibration = () => {
+  // Stop any running calibration (and its speech) and leave full screen when leaving the page
+  useEffect(() => () => {
     cancelCalibration();
+    exitFullscreen();
+  }, [cancelCalibration]);
+
+  // Start calibration and Redo. Full screen needs a user gesture, so this only runs from a button click.
+  const startCalibration = () => {
+    cancelCalibration();
+    enterFullscreen();
     runCalibration();
   };
 
@@ -528,7 +475,6 @@ useEffect(() => {
 
 const handleEndSession = () => {
     if (DEBUG_LOGS) console.log("🚀 Ending Study Session...");
-    if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.close();
     }
@@ -694,11 +640,25 @@ const handleEndSession = () => {
             <div className="text-sm text-blue-300 font-medium mb-2">Screen calibration</div>
             <div className="text-2xl text-white font-semibold">
               {calibrationStatus === 'waiting'
-                ? 'Looking for your face...'
+                ? (faceSeen ? 'Calibrate to your screen' : 'Looking for your face...')
                 : calibrationStatus === 'failed'
                   ? "Your eyes didn't move enough to measure your screen."
                   : calibrationView.prompt}
             </div>
+            {calibrationStatus === 'waiting' && (
+              <>
+                <div className="mt-2 text-gray-300">
+                  The page goes full screen while you follow a dot with your eyes.
+                </div>
+                <button
+                  onClick={startCalibration}
+                  disabled={!faceSeen}
+                  className="mt-8 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Start calibration
+                </button>
+              </>
+            )}
             {calibrationStatus === 'failed' && (
               <div className="mt-2 text-gray-300">
                 Using the default screen range for now. Redo the calibration, or skip to start the session.
@@ -735,7 +695,7 @@ const handleEndSession = () => {
           <div className="absolute bottom-8 inset-x-0 flex justify-center gap-6">
             {calibrationStatus !== 'waiting' && (
               <button
-                onClick={redoCalibration}
+                onClick={startCalibration}
                 className={calibrationStatus === 'failed'
                   ? 'bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300'
                   : 'text-gray-400 hover:text-white text-sm underline underline-offset-4 transition-colors'}
@@ -752,9 +712,6 @@ const handleEndSession = () => {
           </div>
         </div>
       )}
-
-      {/* Hidden canvas for frame processing */}
-      <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
     </div>
   );
 }

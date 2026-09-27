@@ -4,6 +4,10 @@ This checkpoint (git tag `comparison-harness`) runs the old and new focus-scorin
 the same session and logs their outputs once per second. Use it to rerun the comparison tests after the
 gaze score ships.
 
+The gaze score has shipped, and later commits removed the JPEG path, the classifier and the comparison logging.
+The file links below point to files that exist only at the tag. Run `git checkout comparison-harness` before
+following this doc.
+
 Only the server JPEG score reaches the user. Everything from the landmark path is logged, never sent to the
 client. The one exception is the calibration result, which the browser needs to offer a redo.
 
