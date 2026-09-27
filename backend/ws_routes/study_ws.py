@@ -114,7 +114,7 @@ async def study_session_handling(websocket: WebSocket):
                     raise WebSocketDisconnect(message.get("code", 1000))
 
                 # Temporary: JPEG frame vs landmark JSON comparison, logged at most once per second
-                comparison.log_if_due(landmarks.smoothed_prob)
+                comparison.log_if_due(landmarks.smoothed_prob, landmarks.eyes_closed_frames)
 
                 if message.get("text") is not None:
                     # Landmark JSON pipeline (text): scored and classified, not sent to the client yet

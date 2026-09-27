@@ -41,7 +41,7 @@ class ScoreComparisonLog:
                 self.max_raw_prob = reading.probability
                 self.peak_blendshapes = reading.blendshapes
 
-    def log_if_due(self, smoothed_prob):
+    def log_if_due(self, smoothed_prob, eyes_closed_frames):
         now = time.time()
         if now - self.last_log < 1:
             return
@@ -59,7 +59,8 @@ class ScoreComparisonLog:
             logger.info(
                 f"t={t:.1f}s Video-score: {self.video_score} | "
                 f"Raw: prob={raw_prob:.2f} (peak={self.max_raw_prob:.2f}) is_distracted={raw_is_distracted} | "
-                f"Smoothed: prob={smoothed_prob:.2f} is_distracted={is_distracted_smoothed}"
+                f"Smoothed: prob={smoothed_prob:.2f} is_distracted={is_distracted_smoothed} | "
+                f"eyes_closed_frames={eyes_closed_frames}"
             )
             if self.peak_blendshapes is None:
                 peak_text = "no face detected"
