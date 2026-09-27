@@ -1,19 +1,13 @@
-# Multi-stage build for Python FastAPI application with CV dependencies
+# Multi-stage build for Python FastAPI application
 FROM python:3.12-slim as builder
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies required for OpenCV and other packages
+# Install build tools for packages that compile native extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
-    libglib2.0-0 \
-    libsm6 \
-    libxrender1 \
-    libgomp1 \
-    libxext6 \
-    libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -28,16 +22,6 @@ FROM python:3.12-slim
 
 # Set working directory
 WORKDIR /app
-
-# Install runtime system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libglib2.0-0 \
-    libsm6 \
-    libxrender1 \
-    libgomp1 \
-    libxext6 \
-    libgl1 \
-    && rm -rf /var/lib/apt/lists/*
 
 # Copy Python packages from builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages

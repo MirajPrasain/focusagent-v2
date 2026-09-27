@@ -144,9 +144,11 @@ screen), it scored 100 on all 8 logged seconds, where the old geometric score ga
 
 ## Reproducing
 
-The CSVs exported from DataCollect aren't in the repo. With them:
+The CSVs exported from DataCollect aren't in the repo. The script also needs scikit-learn, which isn't in
+`requirements.txt` because the server doesn't use it. With the CSVs:
 
 ```bash
+pip install scikit-learn numpy
 python backend/scripts/train_classifier.py session1.csv session2.csv session3.csv            # 8-feature model
 python backend/scripts/train_classifier.py --include-blink session1.csv session2.csv session3.csv  # 10-feature model
 ```
