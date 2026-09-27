@@ -1,7 +1,9 @@
 import json
 import logging
-import statistics
+import time
 from collections import deque, namedtuple
+
+import numpy as np
 
 from cv_project.geometry import eye_openness, head_down_ratio
 from cv_project.study_mode import get_focus_score, get_iris_ratios, has_all_landmarks, new_scoring_state
@@ -21,9 +23,9 @@ logger = logging.getLogger(__name__)
 #     └── blendshapes -> classify_distraction()   raw probability ─┐
 #                     -> eyes-closed window (PERCLOS) (1.0 if closed) ─┴-> EMA (smoothed_prob)
 #
-#   calibration message {"phase": ...} (start of the session, see CALIBRATION_PHASES)
-#     while a phase runs, landmark messages only collect gaze_yaw; nothing is scored
-#     "done" -> screen_ranges that get_gaze_score() checks gaze_yaw against
+#   calibration message {"phase": ...} (start of the session, see CALIBRATION_RECORDING_PHASES)
+#     until "done", landmark messages only collect gaze_yaw (during recordings); nothing is scored
+#     "done" -> screen_ranges that get_gaze_score() checks gaze_yaw against, and a reply to the client
 
 # EMA over per-message classifier probabilities: a single-frame spike (a blink, a momentary glance)
 # gets pulled toward the recent average instead of flagging outright, while sustained distraction
@@ -50,15 +52,22 @@ SCREEN_CENTER_DEG = 0
 SCREEN_HALF_WIDTH_DEG = 15
 DEFAULT_SCREEN_RANGE = (SCREEN_CENTER_DEG - SCREEN_HALF_WIDTH_DEG, SCREEN_CENTER_DEG + SCREEN_HALF_WIDTH_DEG)
 
-# Per-session calibration (Session.tsx): the browser sends {"type": "calibration", "phase": ...} at the start of
-# each phase and the user looks where the prompt says. Each phase's gaze_yaw samples are reduced to their median.
-#   main screen range   = [median(left), median(right)] (low to high) widened by SCREEN_MARGIN_DEG on each side
-#   second screen range = median(second_screen) ± SECOND_SCREEN_HALF_WIDTH_DEG, only if that phase was recorded
-# "choice" is the pause while the user picks whether they have a second screen: calibrating, but not collected.
-# "done" ends calibration; with no left/right samples (e.g. skipped) the main range stays DEFAULT_SCREEN_RANGE.
-CALIBRATION_PHASES = ("center", "left", "right", "choice", "second_screen")
+# Per-session calibration (Session.tsx). The browser sends {"type": "calibration", "phase": ...}:
+#   "idle"           calibrating but not recording (instructions, countdowns, the second-screen question)
+#   "main"           recording starts: the user follows a dot around the main screen's border (~10s).
+#                    Starts a new calibration run, so a redo discards the previous samples
+#   "second_screen"  recording starts for one of the five second-screen points ({"point": ...}, 2s each)
+#   "done"           calibration ends; {"skipped": true} discards the samples and keeps the default range
+# The first CALIBRATION_SETTLE_S of every recording is ignored while the eyes move to the target.
+#   main screen range   = CALIBRATION_PERCENTILES of the main samples, widened by SCREEN_MARGIN_DEG on each side
+#   second screen range = same over all second_screen samples, only if that phase was recorded
+# If the main samples span less than MIN_MAIN_RANGE_DEG (before the margin), the user probably didn't follow
+# the dot: the main range falls back to DEFAULT_SCREEN_RANGE and the client is told so it can offer a redo.
+CALIBRATION_RECORDING_PHASES = ("main", "second_screen")
+CALIBRATION_SETTLE_S = 0.5
+CALIBRATION_PERCENTILES = (5, 95)
 SCREEN_MARGIN_DEG = 3
-SECOND_SCREEN_HALF_WIDTH_DEG = 8
+MIN_MAIN_RANGE_DEG = 6
 # Looking off screen alone leaves 100 - 70 = 30, below the score < 40 distraction cutoff (study_mode.py)
 GAZE_OFF_SCREEN_PENALTY = 70
 
@@ -123,9 +132,10 @@ class LandmarkPipeline:
         self.smoothed_prob = None
         # Closed/open status of the last EYES_CLOSED_WINDOW messages, for the eyes-closed rule
         self.eyes_closed_window = deque(maxlen=EYES_CLOSED_WINDOW)
-        # Calibration: the running phase (None when not calibrating), gaze_yaw samples per phase,
-        # and the (low, high) gaze_yaw ranges that count as on screen
+        # Calibration: the running phase (None when not calibrating), when its recording started,
+        # gaze_yaw samples per recording phase, and the (low, high) gaze_yaw ranges that count as on screen
         self.calibration_phase = None
+        self.recording_started = None
         self.calibration_samples = {}
         self.screen_ranges = [DEFAULT_SCREEN_RANGE]
 
@@ -135,54 +145,70 @@ class LandmarkPipeline:
         return sum(self.eyes_closed_window)
 
     def handle_text_message(self, text):
-        """Handles one text message: a landmark message returns its LandmarkReading, a calibration message
-        updates the calibration and returns None."""
+        """Handles one text message. Returns (reading, reply): reading is the LandmarkReading of a landmark message
+        (None for a calibration message), reply is a dict to send to the client (the calibration result on "done")."""
         try:
             message = json.loads(text)
         except json.JSONDecodeError as e:
             logger.warning(f"Invalid landmark JSON: {e}")
-            return LandmarkReading(None, None, None)
+            return LandmarkReading(None, None, None), None
         if message.get("type") == "calibration":
-            self.handle_calibration_message(message)
-            return None
+            return None, self.handle_calibration_message(message)
         if message.get("type") != "landmarks":
             logger.warning(f"Unknown text message: {message}")
-            return LandmarkReading(None, None, None)
-        return self.handle_landmark_message(message)
+            return LandmarkReading(None, None, None), None
+        return self.handle_landmark_message(message), None
 
     def handle_calibration_message(self, message):
-        """Starts collecting a calibration phase, or on "done" turns the collected samples into screen_ranges."""
+        """Switches the calibration phase. On "done" returns the calibration result for the client, else None."""
         phase = message.get("phase")
-        if phase == "center":
-            self.calibration_samples = {}  # a new calibration run starts from scratch
-        if phase in CALIBRATION_PHASES:
+        if phase == "main":
+            self.calibration_samples = {}  # a new calibration run (or a redo) starts from scratch
+        if phase == "idle" or phase in CALIBRATION_RECORDING_PHASES:
             self.calibration_phase = phase
+            self.recording_started = time.monotonic()
         elif phase == "done":
             self.calibration_phase = None
-            self.finish_calibration()
+            if message.get("skipped"):
+                self.calibration_samples = {}
+            return self.finish_calibration()
         else:
             logger.warning(f"Unknown calibration phase: {message}")
+        return None
 
     def finish_calibration(self):
-        """Sets screen_ranges from the median gaze_yaw of each recorded phase and logs the result."""
-        medians = {phase: statistics.median(samples) for phase, samples in self.calibration_samples.items() if samples}
-        if "left" in medians and "right" in medians:
-            low, high = sorted((medians["left"], medians["right"]))
-            main = (low - SCREEN_MARGIN_DEG, high + SCREEN_MARGIN_DEG)
-            main_text = f"[{main[0]:.1f}, {main[1]:.1f}]"
+        """Sets screen_ranges from the collected samples, logs the result and returns it as a client message:
+        {"type": "calibration", "status": "ok" | "too_narrow" | "not_calibrated", "main": [low, high], "second": ...}"""
+        def percentile_range(samples):
+            low, high = np.percentile(samples, CALIBRATION_PERCENTILES)
+            return float(low), float(high)
+
+        def fmt(bounds):
+            return f"[{bounds[0]:.1f}, {bounds[1]:.1f}]"
+
+        main_samples = self.calibration_samples.get("main")
+        if not main_samples:
+            status, main, main_note = "not_calibrated", DEFAULT_SCREEN_RANGE, " (default, not calibrated)"
         else:
-            main = DEFAULT_SCREEN_RANGE
-            main_text = f"[{main[0]:.1f}, {main[1]:.1f}] (default, not calibrated)"
+            low, high = percentile_range(main_samples)
+            if high - low < MIN_MAIN_RANGE_DEG:
+                logger.warning(f"Calibration: main screen span {fmt((low, high))} is narrower than {MIN_MAIN_RANGE_DEG}°, "
+                               f"falling back to the default {fmt(DEFAULT_SCREEN_RANGE)}")
+                status, main, main_note = "too_narrow", DEFAULT_SCREEN_RANGE, " (default, calibration too narrow)"
+            else:
+                status, main, main_note = "ok", (low - SCREEN_MARGIN_DEG, high + SCREEN_MARGIN_DEG), ""
         self.screen_ranges = [main]
-        second_text = "none"
-        if "second_screen" in medians:
-            second = (medians["second_screen"] - SECOND_SCREEN_HALF_WIDTH_DEG,
-                      medians["second_screen"] + SECOND_SCREEN_HALF_WIDTH_DEG)
+
+        second = None
+        if self.calibration_samples.get("second_screen"):
+            low, high = percentile_range(self.calibration_samples["second_screen"])
+            second = (low - SCREEN_MARGIN_DEG, high + SCREEN_MARGIN_DEG)
             self.screen_ranges.append(second)
-            second_text = f"[{second[0]:.1f}, {second[1]:.1f}]"
+
         counts = " ".join(f"{phase}={len(samples)}" for phase, samples in self.calibration_samples.items())
-        center = f"{medians['center']:.1f}" if "center" in medians else "n/a"
-        logger.info(f"Calibration: main={main_text} second={second_text} | center={center} samples: {counts or 'none'}")
+        logger.info(f"Calibration: main={fmt(main)}{main_note} second={fmt(second) if second else 'none'} | "
+                    f"samples: {counts or 'none'}")
+        return {"type": "calibration", "status": status, "main": list(main), "second": list(second) if second else None}
 
     def handle_landmark_message(self, message):
         """Scores and classifies one parsed landmark message, updates smoothed_prob, and returns a LandmarkReading.
@@ -217,9 +243,10 @@ class LandmarkPipeline:
         except Exception as e:
             logger.warning(f"Gaze angle failed: {e}")
 
-        # Calibrating: collect gaze_yaw for the running phase ("choice" collects nothing) and score nothing
+        # Calibrating: collect gaze_yaw while a recording runs (after its settle time) and score nothing
         if self.calibration_phase is not None:
-            if gaze_yaw is not None and self.calibration_phase != "choice":
+            settled = time.monotonic() - self.recording_started >= CALIBRATION_SETTLE_S
+            if gaze_yaw is not None and self.calibration_phase in CALIBRATION_RECORDING_PHASES and settled:
                 self.calibration_samples.setdefault(self.calibration_phase, []).append(gaze_yaw)
             return LandmarkReading(None, None, None, head_pose, None, eye_turn, gaze_yaw, None)
 

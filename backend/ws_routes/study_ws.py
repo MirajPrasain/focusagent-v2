@@ -118,10 +118,14 @@ async def study_session_handling(websocket: WebSocket):
 
                 if message.get("text") is not None:
                     # Landmark JSON pipeline (text): scored and classified, not sent to the client yet
-                    # Calibration messages return None: nothing to record
-                    reading = landmarks.handle_text_message(message["text"])
+                    reading, reply = landmarks.handle_text_message(message["text"])
                     if reading is not None:
                         comparison.record_landmark_reading(reading)
+                    if reply is not None:
+                        # Calibration result. The browser starts its session timer now, so the JPEG
+                        # pipeline's session clock (the "Session Ended" cutoff) restarts here too
+                        await websocket.send_text(json.dumps(reply))
+                        session_start_time = time.time()
 
                 elif message.get("bytes") is not None:
                     # JPEG frame pipeline (binary): decoded, scored, and the score sent to the client
