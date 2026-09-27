@@ -113,5 +113,7 @@ async def study_session_handling(websocket: WebSocket):
     except Exception as e:
         logger.error(f"Unexpected WebSocket error: {e}")
     finally:
+        if pipeline:
+            pipeline.stop()
         scored = len(pipeline.gaze_scores) if pipeline else 0
         logger.info(f"WebSocket session ended. Handled {message_count} messages, {scored} scored this session.")

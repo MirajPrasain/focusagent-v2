@@ -19,8 +19,9 @@ logger = logging.getLogger(__name__)
 #
 #   calibration message {"phase": ...} (start of the session, see CALIBRATION_RECORDING_PHASES)
 #     until "done", landmark messages only collect gaze_yaw (during recordings); nothing is scored
-#     "done" -> screen_ranges that get_gaze_score() checks gaze_yaw against, a reply to the client, and the
-#               session clock starts: messages are scored until session_duration has passed
+#     "done" -> screen_ranges that get_gaze_score() checks gaze_yaw against and a reply to the client. If the
+#               calibration succeeded or was skipped, the session clock starts: messages are scored until
+#               session_duration has passed. After a failure nothing is scored until a redo or skip succeeds
 
 # Horizontal gaze angle = head yaw corrected by how far the eyes are turned in their sockets:
 #   eye_turn = (eyeLookInLeft + eyeLookOutRight - eyeLookInRight - eyeLookOutLeft) / 2, positive = eyes to the user's right
@@ -53,7 +54,8 @@ SCREEN_MARGIN_DEG = 3
 SECOND_SCREEN_MARGIN_DEG = 5
 MIN_MAIN_RANGE_DEG = 6
 
-# A score below DISTRACTED_BELOW counts as distracted (cheat event EVENT_LOW_SCORE)
+# The one definition of distracted: a score below DISTRACTED_BELOW. It drives the live badge and distraction count
+# (the "distracted" flag sent with each score) and the post-session donut (ws_routes/charts.py)
 DISTRACTED_BELOW = 40
 # Looking off screen alone leaves 100 - 70 = 30, below DISTRACTED_BELOW
 GAZE_OFF_SCREEN_PENALTY = 70
@@ -87,7 +89,7 @@ def get_gaze_score(landmarks, gaze_yaw, state, screen_ranges=(DEFAULT_SCREEN_RAN
         return None, []
 
     eye_aspect_ratio = eye_openness(landmarks[159], landmarks[145], landmarks[33], landmarks[133])
-    _, iris_vertical = get_iris_ratios(landmarks)
+    eyes_shut = eye_aspect_ratio < EYES_CLOSED_EAR
     head_down_value = head_down_ratio(landmarks[1], landmarks[152], landmarks[151])
 
     events = []
@@ -98,18 +100,22 @@ def get_gaze_score(landmarks, gaze_yaw, state, screen_ranges=(DEFAULT_SCREEN_RAN
     if not any(low <= gaze_yaw <= high for low, high in screen_ranges):
         focus -= GAZE_OFF_SCREEN_PENALTY
         events.append(EVENT_OFF_SCREEN)
-    # Vertical rules: iris high or low in the eye, head tipped up or down
-    if iris_vertical < 0.25 or iris_vertical > 0.75:
-        focus -= 50
+    # Vertical rules: iris high or low in the eye, head tipped up or down. The iris rules are skipped while the eye is
+    # shut: the iris position means nothing then, and the first frames of a blink would score 20. The eyes-closed
+    # streak below handles real closure
+    if not eyes_shut:
+        _, iris_vertical = get_iris_ratios(landmarks)
+        if iris_vertical < 0.25 or iris_vertical > 0.75:
+            focus -= 50
+        if iris_vertical < 0.4 or iris_vertical > 0.6:
+            focus -= 30
     if head_down_value > 1.3 or head_down_value < 0.75:
         focus -= 50
-    if iris_vertical < 0.4 or iris_vertical > 0.6:
-        focus -= 30
     if head_down_value > LOOKING_DOWN_RATIO:
         events.append(EVENT_LOOKING_DOWN)
 
     # Eyes closed: a streak, so a single blink doesn't count
-    if eye_aspect_ratio < EYES_CLOSED_EAR:
+    if eyes_shut:
         state["blink_counter"] += 1
     else:
         state["blink_counter"] = 0
@@ -128,10 +134,11 @@ class LandmarkPipeline:
     the post-session charts (ws_routes/charts.py)."""
 
     def __init__(self, session_duration):
-        # Session length in seconds. The session clock starts when calibration ends or is skipped
+        # Planned session length in seconds. The session clock starts when calibration succeeds or is skipped
         self.session_duration = session_duration
         self.session_started = None  # time.monotonic() when the session clock started, None until then
-        # Every score sent to the client this session, in order
+        self.session_stopped = None  # time.monotonic() when the connection closed, None while it's open
+        # Every score sent to the client this session, in order, as (seconds since the session clock started, score)
         self.gaze_scores = []
         # get_gaze_score's eyes-closed streak
         self.scoring_state = {"blink_counter": 0}
@@ -147,10 +154,23 @@ class LandmarkPipeline:
         self.created = time.monotonic()
         self.last_log = None
 
+    def stop(self):
+        """Marks the connection as closed, so session_length() stops growing."""
+        if self.session_stopped is None:
+            self.session_stopped = time.monotonic()
+
+    def session_length(self):
+        """Seconds the session actually ran: from the session clock's start until the connection closed (or now),
+        capped at session_duration. 0 if the session never started."""
+        if self.session_started is None:
+            return 0
+        end = self.session_stopped if self.session_stopped is not None else time.monotonic()
+        return min(max(0.0, end - self.session_started), self.session_duration)
+
     def handle_text_message(self, text):
         """Handles one text message and returns the text to send back to the client, or None: the calibration
-        result for the calibration "done" message, {"score", "cheat_events"} for a scored landmark message, and
-        SESSION_ENDED ({"type": "session_ended"}) for a landmark message after the session is over."""
+        result for the calibration "done" message, {"score", "cheat_events", "distracted"} for a scored landmark
+        message, and SESSION_ENDED ({"type": "session_ended"}) for a landmark message after the session is over."""
         try:
             message = json.loads(text)
         except json.JSONDecodeError as e:
@@ -165,8 +185,8 @@ class LandmarkPipeline:
         return self.handle_landmark_message(message)
 
     def handle_calibration_message(self, message):
-        """Switches the calibration phase. On "done" starts the session and returns the calibration result for the
-        client, else returns None."""
+        """Switches the calibration phase. On "done" returns the calibration result for the client (and starts the
+        session if the calibration succeeded or was skipped), else returns None."""
         phase = message.get("phase")
         if phase == "main":
             self.calibration_samples = {}  # a new calibration run (or a redo) starts from scratch
@@ -177,12 +197,16 @@ class LandmarkPipeline:
             self.recording_key = f"second_screen/{message.get('point', 'unknown')}" if phase == "second_screen" else phase
         elif phase == "done":
             self.calibration_phase = None
-            if message.get("skipped"):
+            skipped = bool(message.get("skipped"))
+            if skipped:
                 self.calibration_samples = {}
             result = self.finish_calibration()
-            # The browser starts its session timer now, so the session clock and its scores start over here too
-            self.session_started = time.monotonic()
-            self.gaze_scores = []
+            # Only a successful calibration or a skip starts the session. On a failure (too_narrow, not_calibrated)
+            # the browser offers Redo / Skip and nothing is scored until one of them ends in a "done" that starts it.
+            # The browser starts its session timer at the same point, so the clock and its scores start over here too
+            if skipped or result["status"] == "ok":
+                self.session_started = time.monotonic()
+                self.gaze_scores = []
             return result
         else:
             logger.warning(f"Unknown calibration phase: {message}")
@@ -270,7 +294,7 @@ class LandmarkPipeline:
             if gaze_yaw is not None and self.calibration_phase in CALIBRATION_RECORDING_PHASES and settled:
                 self.calibration_samples.setdefault(self.recording_key, []).append(gaze_yaw)
         elif self.session_started is None:
-            pass  # calibration hasn't run yet: nothing to score against
+            pass  # no successful calibration or skip yet: the session hasn't started
         elif time.monotonic() - self.session_started > self.session_duration:
             reply = SESSION_ENDED
         else:
@@ -280,8 +304,9 @@ class LandmarkPipeline:
             except Exception as e:
                 logger.warning(f"Gaze scoring failed: {e}")
             if score is not None:
-                self.gaze_scores.append(score)
-                reply = json.dumps({"score": score, "cheat_events": cheat_events})
+                self.gaze_scores.append((time.monotonic() - self.session_started, score))
+                reply = json.dumps({"score": score, "cheat_events": cheat_events,
+                                    "distracted": score < DISTRACTED_BELOW})
 
         self.log_if_due(gaze_yaw, score)
         return reply

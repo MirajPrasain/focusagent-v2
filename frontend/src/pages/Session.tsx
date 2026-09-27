@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { Square, RotateCcw } from 'lucide-react';
-import { detectFaces } from '../lib/faceLandmarker'
+import { detectFaces, faceModelFailed } from '../lib/faceLandmarker'
 import { speak, speakAndWait, sleep } from '../lib/speech'
 
 // Set to true to re-enable websocket/TTS/session console logs
@@ -15,8 +15,17 @@ const DEBUG_LOGS = false;
 const MAIN_SCAN_SECONDS = 10; // the dot takes ~2.5s per edge of the screen border
 const SECOND_SCREEN_POINT_SECONDS = 2;
 const COUNTDOWN_FROM = 3;
-// No reply to "done" within this long (e.g. an older backend): start the session anyway
+// No reply to "done" within this long: treat it as a failed calibration (Redo / Skip)
 const CALIBRATION_REPLY_TIMEOUT_MS = 3000;
+
+// Why the last calibration failed, shown with Redo / Skip. Only "ok" or a skip starts the session: the backend
+// doesn't start its session clock on a failure either
+type CalibrationFailure = 'too_narrow' | 'not_calibrated' | 'no_reply';
+const CALIBRATION_FAILURE_MESSAGES: Record<CalibrationFailure, string> = {
+  too_narrow: "Your eyes didn't move enough to measure your screen.",
+  not_calibrated: "We couldn't track your eyes during calibration.",
+  no_reply: "The server didn't answer, so your calibration couldn't be checked.",
+};
 
 const SECOND_SCREEN_POINTS = [
   { id: 'top_left', label: 'top left corner' },
@@ -27,7 +36,7 @@ const SECOND_SCREEN_POINTS = [
 ];
 
 // waiting: for the Start calibration button; running: the steps below; checking: waiting for the backend's result;
-// failed: the backend found the scan too narrow; done: overlay closed, session timer running
+// failed: see CalibrationFailure; done: overlay closed, session timer running
 type CalibrationStatus = 'waiting' | 'running' | 'checking' | 'failed' | 'done';
 
 type CalibrationView = {
@@ -119,30 +128,53 @@ function Session() {
   const [calibrationView, setCalibrationView] = useState<CalibrationView>(IDLE_VIEW);
   const calibrationRunRef = useRef(0); // bumped to cancel the running calibration
   const secondScreenAnswerRef = useRef<((yes: boolean) => void) | null>(null);
+  const [calibrationFailure, setCalibrationFailure] = useState<CalibrationFailure | null>(null);
   const sessionStarted = calibrationStatus === 'done';
+  // For the websocket's onmessage, which is set up once: score messages are ignored until the session starts
+  const sessionStartedRef = useRef(false);
+
+  // Shown in the calibration overlay, which covers the status pill and the connection warning
+  const [cameraError, setCameraError] = useState(false);
+  const [modelError, setModelError] = useState(false);
+  const [backendLost, setBackendLost] = useState(false);
 
   const [distractionHistory, setDistractionHistory] = useState<DistractionEvent[]>([]);
+  // Sum and count of every score received during the session: the debrief's focus score is their average
+  const scoreTotalsRef = useRef({ sum: 0, count: 0 });
 
   // API URL - MediaPipe backend for face detection, AI messages, and TTS
   const MEDIAPIPE_API_URL = import.meta.env.VITE_MEDIAPIPE_API_URL || 'http://localhost:8001';
 
-  // Start webcam stream
+  // Start webcam stream, and release the camera when the page is left (End Session also stops it)
   useEffect(() => {
+    let stream: MediaStream | null = null;
+    let unmounted = false;
     navigator.mediaDevices.getUserMedia({ video: true })
-      .then((stream) => {
+      .then((s) => {
+        // Arrived after the page was left (or after StrictMode's first mount in dev): release it right away
+        if (unmounted) {
+          s.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        stream = s;
         if (videoRef.current) {
-          videoRef.current.srcObject = stream;
+          videoRef.current.srcObject = s;
           setStatus("Camera Active");
         }
       })
       .catch((err) => {
         console.error("Camera access error:", err);
         setStatus("Camera access denied");
+        setCameraError(true);
       });
+    return () => {
+      unmounted = true;
+      stream?.getTracks().forEach((t) => t.stop());
+    };
   }, []);
 
   // Browser-side MediaPipe: every 200ms, detect the face and send a landmark message on the study websocket.
-  // The backend (backend/cv_project/landmark_pipeline.py) scores it and replies with {score, cheat_events}.
+  // The backend (backend/cv_project/landmark_pipeline.py) scores it and replies with {score, cheat_events, distracted}.
   useEffect(() => {
     // Same indices as LANDMARK_INDICES in backend/cv_project/geometry.py
     const LANDMARK_INDICES = [159, 145, 33, 133, 468, 1, 234, 454, 152, 151];
@@ -224,6 +256,11 @@ function Session() {
         }
       } catch (err) {
         console.error('[FaceLandmarker] detection error:', err);
+        // The model gave up loading (lib/faceLandmarker.ts): stop the loop and say so in the overlay
+        if (faceModelFailed()) {
+          clearInterval(interval);
+          setModelError(true);
+        }
       } finally {
         busy = false;
       }
@@ -292,10 +329,12 @@ useEffect(() => {
         const data = JSON.parse(event.data);
         if (DEBUG_LOGS) console.log('📊 Received from backend:', data);
 
-        // Calibration result (reply to "done"): only matters while the overlay waits for it
+        // Calibration result (reply to "done"): only matters while the overlay waits for it. Only "ok" starts the
+        // session; too_narrow and not_calibrated show Redo / Skip
         if (data.type === 'calibration') {
+          if (data.status !== 'ok') setCalibrationFailure(data.status);
           setCalibrationStatus((current) =>
-            current === 'checking' ? (data.status === 'too_narrow' ? 'failed' : 'done') : current);
+            current === 'checking' ? (data.status === 'ok' ? 'done' : 'failed') : current);
           return;
         }
 
@@ -315,8 +354,12 @@ useEffect(() => {
           return;
         }
 
+        // Scores count only once the session has started (calibration succeeded or was skipped)
+        if (!sessionStartedRef.current) return;
+
         const score = data.score;
-        const cheatEvents = data.cheat_events;
+        // score < DISTRACTED_BELOW on the backend; cheat_events only say why
+        const distracted = data.distracted === true;
 
         // Debug logging
         if (DEBUG_LOGS) console.log('Focus Score received:', score, 'Type:', typeof score);
@@ -324,6 +367,8 @@ useEffect(() => {
         // Handle score
         if (typeof score === 'number') {
           setFocusScore(score);
+          scoreTotalsRef.current.sum += score;
+          scoreTotalsRef.current.count += 1;
           if (score === 0) {
             if (DEBUG_LOGS) console.warn('⚠️ Score is 0 - Check if face is visible and well-lit');
           }
@@ -332,9 +377,9 @@ useEffect(() => {
           setFocusScore(null);
         }
         
-        setDistraction(cheatEvents && cheatEvents.length > 0);
+        setDistraction(distracted);
 
-        const message = cheatEvents && cheatEvents.length > 0
+        const message = distracted
           ? `Focus Score: ${score} (Distraction detected)`
           : `Focus Score: ${score || 'Processing...'}`;
 
@@ -346,7 +391,9 @@ useEffect(() => {
       }
     };
 
+    // Both handlers ignore an old socket (StrictMode's first mount in dev), so it can't mark the live one as lost
     socket.onerror = (err) => {
+      if (socketRef.current !== socket) return;
       console.error("❌ WebSocket error:", err);
       console.error("Is MediaPipe backend running on", MEDIAPIPE_API_URL, "?");
       setStatus("⚠️ Connection Error - Check if backend is running");
@@ -354,9 +401,11 @@ useEffect(() => {
     };
 
     socket.onclose = (event) => {
+      if (socketRef.current !== socket) return;
       if (DEBUG_LOGS) console.log("🔌 WebSocket connection closed. Code:", event.code, "Reason:", event.reason);
       setStatus("Disconnected - Backend may not be running");
       setBackendConnected(false);
+      setBackendLost(true);
     };
 
     return () => {
@@ -443,13 +492,23 @@ useEffect(() => {
     }
   }, [sendCalibration]);
 
-  // No reply to "done" in time: start the session with whatever the backend has
+  // No reply to "done" in time: a failure, since the backend only starts its session clock on a success it replied to
   useEffect(() => {
     if (calibrationStatus !== 'checking') return;
-    const timer = setTimeout(() => setCalibrationStatus((current) => current === 'checking' ? 'done' : current),
-      CALIBRATION_REPLY_TIMEOUT_MS);
+    const timer = setTimeout(() => {
+      setCalibrationFailure('no_reply');
+      setCalibrationStatus((current) => current === 'checking' ? 'failed' : current);
+    }, CALIBRATION_REPLY_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [calibrationStatus]);
+
+  // The session starts: from here on scores count, and the distraction count and score average start from zero
+  useEffect(() => {
+    if (!sessionStarted) return;
+    setDistractionHistory([]);
+    scoreTotalsRef.current = { sum: 0, count: 0 };
+    sessionStartedRef.current = true;
+  }, [sessionStarted]);
 
   // Leave full screen once calibration is finished or skipped
   useEffect(() => {
@@ -492,12 +551,14 @@ const handleEndSession = () => {
       tracks.forEach((track: MediaStreamTrack) => track.stop());
     }
 
+    // The session's focus score is the average of every score received during it
+    const { sum, count } = scoreTotalsRef.current;
     localStorage.setItem("lastSession", JSON.stringify({
       duration,
       minute: Math.floor((Date.now() - sessionStartTime.current) / 60000),
       distractionHistory: distractionHistory,
       totalDistractions: distractionHistory.length,
-      focusScore: focusScore
+      focusScore: count > 0 ? Math.round(sum / count) : null
     }));
     navigate("/post-session");
   };
@@ -651,9 +712,11 @@ const handleEndSession = () => {
             <div className="text-sm text-blue-300 font-medium mb-2">Screen calibration</div>
             <div className="text-2xl text-white font-semibold">
               {calibrationStatus === 'waiting'
-                ? (faceSeen ? 'Calibrate to your screen' : 'Looking for your face...')
+                ? (cameraError || modelError
+                  ? "Face tracking isn't available"
+                  : faceSeen ? 'Calibrate to your screen' : 'Looking for your face...')
                 : calibrationStatus === 'failed'
-                  ? "Your eyes didn't move enough to measure your screen."
+                  ? calibrationFailure && CALIBRATION_FAILURE_MESSAGES[calibrationFailure]
                   : calibrationView.prompt}
             </div>
             {calibrationStatus === 'waiting' && (
@@ -672,7 +735,26 @@ const handleEndSession = () => {
             )}
             {calibrationStatus === 'failed' && (
               <div className="mt-2 text-gray-300">
-                Using the default screen range for now. Redo the calibration, or skip to start the session.
+                Redo the calibration, or skip to start the session with a default screen range.
+              </div>
+            )}
+            {(cameraError || modelError || backendLost) && (
+              <div className="mt-6 mx-auto max-w-md space-y-2 text-sm text-red-200">
+                {cameraError && (
+                  <div className="bg-red-500/20 border border-red-500/50 rounded-xl px-4 py-3">
+                    The camera isn't available. Allow camera access for this site, then reload the page.
+                  </div>
+                )}
+                {modelError && (
+                  <div className="bg-red-500/20 border border-red-500/50 rounded-xl px-4 py-3">
+                    The face tracking model didn't load. Check your internet connection, then reload the page.
+                  </div>
+                )}
+                {backendLost && (
+                  <div className="bg-red-500/20 border border-red-500/50 rounded-xl px-4 py-3">
+                    Can't reach the FocusAgent server, so this session can't be tracked. Reload the page to try again.
+                  </div>
+                )}
               </div>
             )}
             {calibrationView.countdown !== null && (
@@ -714,12 +796,14 @@ const handleEndSession = () => {
                 Redo calibration
               </button>
             )}
-            <button
-              onClick={skipCalibration}
-              className="text-gray-400 hover:text-white text-sm underline underline-offset-4 transition-colors"
-            >
-              Skip
-            </button>
+            {calibrationStatus !== 'checking' && (
+              <button
+                onClick={skipCalibration}
+                className="text-gray-400 hover:text-white text-sm underline underline-offset-4 transition-colors"
+              >
+                Skip
+              </button>
+            )}
           </div>
         </div>
       )}
