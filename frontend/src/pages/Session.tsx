@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { Square, RotateCcw } from 'lucide-react';
+import { X } from 'lucide-react';
 import { detectFaces, faceModelFailed } from '../lib/faceLandmarker'
 import { speak, speakAndWait, sleep } from '../lib/speech'
 
@@ -100,6 +100,150 @@ function ScanDot({ moving }: { moving: boolean }) {
   );
 }
 
+// Live status colors. Local stand-ins for the shared design tokens
+const FOCUSED_COLOR = '#3987e5';
+const DISTRACTED_COLOR = '#e66767';
+const NEUTRAL_COLOR = '#9ca3af';
+
+// focused: score at or above the backend's DISTRACTED_BELOW (40); distracted: below it with a face in view;
+// away: below it with no face, shown gray rather than red (the summary still counts it as distracted)
+type FocusState = 'focused' | 'distracted' | 'away';
+const FOCUS_STATES: Record<FocusState, { label: string; color: string }> = {
+  focused: { label: 'Focused', color: FOCUSED_COLOR },
+  distracted: { label: 'Distracted', color: DISTRACTED_COLOR },
+  away: { label: "Can't see you", color: NEUTRAL_COLOR },
+};
+
+// The label leaves Focused only once the score has been below 40 this long without a break. Display only: the
+// distraction count and the debrief's average still use every score
+const LABEL_DEBOUNCE_MS = 2000;
+// With Chime on: one chime after this long distracted without a break, then none until focused again
+const CHIME_AFTER_MS = 10000;
+
+// cheat_events codes (backend/cv_project/landmark_pipeline.py) shown under Distracted
+const DISTRACTION_REASONS: Record<number, string> = {
+  1: 'looking down',
+  2: 'looking away',
+  3: 'someone else in frame',
+  4: 'eyes closed',
+};
+
+// The focus strip shows this much of the session, sampled every STRIP_TICK_MS
+const STRIP_WINDOW_MS = 5 * 60 * 1000;
+const STRIP_TICK_MS = 1000;
+
+// (low, high) gaze_yaw in degrees
+type GazeRange = [number, number];
+// The backend's DEFAULT_SCREEN_RANGE: the main screen when calibration was skipped or failed
+const DEFAULT_MAIN_RANGE: GazeRange = [-15, 15];
+
+const HIDE_CAMERA_KEY = 'focusagent.hideCamera';
+
+const TEXT_TOGGLE = 'underline-offset-4 hover:text-gray-100 transition-colors';
+
+// mm:ss
+function formatClock(totalSeconds: number) {
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function StatusDot({ color }: { color: string }) {
+  return (
+    <span aria-hidden="true" className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+  );
+}
+
+// One stretch of the same state on the focus strip, in Date.now() milliseconds
+type StripRun = { state: 'focused' | 'distracted'; start: number; end: number };
+
+// The last STRIP_WINDOW_MS of the session, starting at `from` (the strip fills from the left for the first
+// STRIP_WINDOW_MS). Time without a face or without scores is left empty
+function FocusStrip({ runs, from }: { runs: StripRun[]; from: number }) {
+  const at = (t: number) => Math.min(Math.max((t - from) / STRIP_WINDOW_MS, 0), 1) * 100;
+  return (
+    <div>
+      <div className="relative h-2 overflow-hidden rounded-full bg-white/10">
+        {runs.map((run) => (
+          <div
+            key={run.start}
+            className="absolute inset-y-0"
+            style={{
+              left: `${at(run.start)}%`,
+              width: `${at(run.end) - at(run.start)}%`,
+              backgroundColor: run.state === 'focused' ? FOCUSED_COLOR : DISTRACTED_COLOR,
+            }}
+          />
+        ))}
+      </div>
+      <div className="mt-1.5 flex items-center gap-3 text-[11px] text-gray-400">
+        <span>Last 5 minutes</span>
+        <span className="ml-auto inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: FOCUSED_COLOR }} />
+          Focused
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: DISTRACTED_COLOR }} />
+          Distracted
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// The live gaze (a dot, hidden with no face) against the calibrated screen ranges. Positive gaze_yaw is the user's
+// left, so the bar runs from +extent on the left to -extent on the right: the dot moves the way the eyes do, like
+// the mirrored camera preview
+function GazeMeter({ gaze, main, second }: { gaze: number | null; main: GazeRange; second: GazeRange | null }) {
+  const extent = Math.max(30, ...[...main, ...(second ?? [])].map(Math.abs)) + 10;
+  const at = (deg: number) => Math.min(Math.max((extent - deg) / (2 * extent), 0), 1) * 100;
+  const ranges = [{ label: 'Main', range: main }, ...(second ? [{ label: 'Second', range: second }] : [])];
+  return (
+    <div className="w-full" role="img" aria-label="Where you're looking, against your screens">
+      <div className="relative h-3 rounded-full bg-white/10">
+        {ranges.map(({ label, range: [low, high] }) => (
+          <div
+            key={label}
+            className="absolute inset-y-0 rounded-sm bg-[#3987e5]/35"
+            style={{ left: `${at(high)}%`, width: `${at(low) - at(high)}%` }}
+          />
+        ))}
+        {gaze !== null && (
+          <div
+            className="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gray-100 ring-2 ring-gray-900 transition-[left] duration-150"
+            style={{ left: `${at(gaze)}%` }}
+          />
+        )}
+      </div>
+      <div className="relative mt-1 h-4 text-[11px] text-gray-400">
+        {ranges.map(({ label, range: [low, high] }) => (
+          <span
+            key={label}
+            className="absolute -translate-x-1/2 whitespace-nowrap"
+            style={{ left: `${Math.min(Math.max((at(low) + at(high)) / 2, 8), 92)}%` }}
+          >
+            {label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// One soft chime: a short sine tone that fades out
+function playChime(audio: AudioContext) {
+  const t = audio.currentTime;
+  const tone = audio.createOscillator();
+  const gain = audio.createGain();
+  tone.frequency.value = 660;
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.exponentialRampToValueAtTime(0.08, t + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
+  tone.connect(gain).connect(audio.destination);
+  tone.start(t);
+  tone.stop(t + 1.2);
+}
+
 interface DistractionEvent {
   timestamp: number;
   type: string;
@@ -109,18 +253,44 @@ interface DistractionEvent {
 function Session() {
   const [searchParams] = useSearchParams();
   const duration = parseInt(searchParams.get("duration") || "25");
-  const goal = decodeURIComponent(searchParams.get("goal") || "");
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
-  const [status, setStatus] = useState("--");
-  const [focusScore, setFocusScore] = useState<number | null>(null);
   const [distraction, setDistraction] = useState(false);
-  const [sessionProgress, setSessionProgress] = useState(0);
   const [elapsedTime, setElapsedTime] = useState(0);
-  const [backendConnected, setBackendConnected] = useState(false);
+  const sessionStartTime = useRef(Date.now());
   const navigate = useNavigate();
+
+  // Live view from the score messages: the debounced label (null until the first score), the latest
+  // cheat_events and gaze (null with no face)
+  const [focusState, setFocusState] = useState<FocusState | null>(null);
+  const [cheatEvents, setCheatEvents] = useState<number[]>([]);
+  const [gaze, setGaze] = useState<number | null>(null);
+  // For the websocket's onmessage and the strip's timer, which are set up once: the label's state, when the score
+  // went below 40 and has stayed there since (belowSince), the same but only while the face is in view
+  // (distractedSince, for the chime), and whether this distraction has chimed already
+  const focusStateRef = useRef<FocusState | null>(null);
+  const belowSinceRef = useRef<number | null>(null);
+  const distractedSinceRef = useRef<number | null>(null);
+  const chimedRef = useRef(false);
+  const [strip, setStrip] = useState<{ runs: StripRun[]; from: number }>({ runs: [], from: 0 });
+  // From the calibration reply; the defaults until then, and what the backend replies to a skip
+  const [screenRanges, setScreenRanges] = useState<{ main: GazeRange; second: GazeRange | null }>(
+    { main: DEFAULT_MAIN_RANGE, second: null });
+
+  const [hideCamera, setHideCamera] = useState(() => {
+    try {
+      return localStorage.getItem(HIDE_CAMERA_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  // Set while Chime is on. Created by the toggle's click, which is what allows it to play
+  const audioRef = useRef<AudioContext | null>(null);
+  const [chimeOn, setChimeOn] = useState(false);
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
+  const [showHiddenNote, setShowHiddenNote] = useState(false);
 
   const [faceSeen, setFaceSeen] = useState(false);
   const faceSeenRef = useRef(false);
@@ -159,12 +329,10 @@ function Session() {
         stream = s;
         if (videoRef.current) {
           videoRef.current.srcObject = s;
-          setStatus("Camera Active");
         }
       })
       .catch((err) => {
         console.error("Camera access error:", err);
-        setStatus("Camera access denied");
         setCameraError(true);
       });
     return () => {
@@ -269,7 +437,7 @@ function Session() {
     return () => clearInterval(interval);
   }, []);
 
-  // Session timer and progress: starts once calibration is finished or skipped
+  // Session timer: starts once calibration is finished or skipped
   useEffect(() => {
     if (!sessionStarted) return;
     const startTime = Date.now();
@@ -278,12 +446,9 @@ function Session() {
 
     const timer = setInterval(() => {
       const elapsed = Date.now() - startTime;
-      const progress = Math.min((elapsed / totalDurationMs) * 100, 100);
-      
       setElapsedTime(Math.floor(elapsed / 1000));
-      setSessionProgress(progress);
 
-      if (progress >= 100) {
+      if (elapsed >= totalDurationMs) {
         clearInterval(timer);
         endSessionRef.current();
       }
@@ -291,8 +456,45 @@ function Session() {
 
     return () => clearInterval(timer);
   }, [duration, sessionStarted]);
-  
-const sessionStartTime = useRef(Date.now());
+
+  // Focus strip: every STRIP_TICK_MS, extend the last run (or start one) with the label's state
+  useEffect(() => {
+    if (!sessionStarted) return;
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const state = focusStateRef.current;
+      setStrip(({ runs }) => {
+        const kept = runs.filter((run) => run.end > now - STRIP_WINDOW_MS);
+        const last = kept[kept.length - 1];
+        // A late tick (hidden tab) leaves a gap instead of stretching the last run over it
+        const joins = last !== undefined && now - last.end <= 2 * STRIP_TICK_MS;
+        if (state === 'focused' || state === 'distracted') {
+          if (joins && last.state === state) kept[kept.length - 1] = { ...last, end: now };
+          else kept.push({ state, start: joins ? last.end : now - STRIP_TICK_MS, end: now });
+        }
+        return { runs: kept, from: Math.max(sessionStartTime.current, now - STRIP_WINDOW_MS) };
+      });
+    }, STRIP_TICK_MS);
+    return () => clearInterval(timer);
+  }, [sessionStarted]);
+
+  // Back from a hidden tab or minimized window: detection was throttled meanwhile, so say so, and restart the
+  // label and chime timers since the score wasn't followed while hidden
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible' || !sessionStartedRef.current) return;
+      belowSinceRef.current = null;
+      distractedSinceRef.current = null;
+      setShowHiddenNote(true);
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
+
+  // Release the chime's audio when leaving the page
+  useEffect(() => () => {
+    audioRef.current?.close();
+  }, []);
 
 // Track distraction events for the session summary
 useEffect(() => {
@@ -318,11 +520,10 @@ useEffect(() => {
     socket.onopen = () => {
       if (DEBUG_LOGS) console.log("✅ Connected to backend Study WebSocket server");
       socket.send(JSON.stringify({ duration }));
-      setStatus("Connected");
-      setBackendConnected(true);
     };
 
-    //onmessage receives {score, cheat_events} back and drives the UI: focus score box, "Distraction detected" badge, status text.
+    // onmessage receives {score, cheat_events, distracted, gaze} back and drives the live view: status label and
+    // reason, focus strip, gaze meter and chime
 
     socket.onmessage = (event) => {
       try {
@@ -332,6 +533,8 @@ useEffect(() => {
         // Calibration result (reply to "done"): only matters while the overlay waits for it. Only "ok" starts the
         // session; too_narrow and not_calibrated show Redo / Skip
         if (data.type === 'calibration') {
+          // The ranges the backend scores against from now on, for the gaze meter
+          if (Array.isArray(data.main)) setScreenRanges({ main: data.main, second: data.second ?? null });
           if (data.status !== 'ok') setCalibrationFailure(data.status);
           setCalibrationStatus((current) =>
             current === 'checking' ? (data.status === 'ok' ? 'done' : 'failed') : current);
@@ -345,12 +548,7 @@ useEffect(() => {
         }
 
         if (data.error) {
-          const errorMessages: Record<string, string> = {
-            invalid_json: "Invalid session data, please reconnect...",
-            duration_error: "Session duration error, please reconnect...",
-            websocket_error: "Connection issue, retrying...",
-          };
-          setStatus(errorMessages[data.error] || `Backend error: ${data.error}`);
+          console.warn("Backend error:", data.error);
           return;
         }
 
@@ -363,31 +561,40 @@ useEffect(() => {
 
         // Debug logging
         if (DEBUG_LOGS) console.log('Focus Score received:', score, 'Type:', typeof score);
-        
-        // Handle score
+
         if (typeof score === 'number') {
-          setFocusScore(score);
           scoreTotalsRef.current.sum += score;
           scoreTotalsRef.current.count += 1;
-          if (score === 0) {
-            if (DEBUG_LOGS) console.warn('⚠️ Score is 0 - Check if face is visible and well-lit');
-          }
-        } else {
-          if (DEBUG_LOGS) console.warn('⚠️ No score in response:', data);
-          setFocusScore(null);
         }
-        
+
         setDistraction(distracted);
 
-        const message = distracted
-          ? `Focus Score: ${score} (Distraction detected)`
-          : `Focus Score: ${score || 'Processing...'}`;
-
-        setStatus(message);
+        // Live view. gaze is null when there's no face
+        const noFace = typeof data.gaze !== 'number';
+        setGaze(noFace ? null : data.gaze);
+        setCheatEvents(Array.isArray(data.cheat_events) ? data.cheat_events : []);
+        const now = Date.now();
+        let next = focusStateRef.current;
+        if (!distracted) {
+          belowSinceRef.current = null;
+          distractedSinceRef.current = null;
+          chimedRef.current = false;
+          next = 'focused';
+        } else {
+          if (belowSinceRef.current === null) belowSinceRef.current = now;
+          if (now - belowSinceRef.current >= LABEL_DEBOUNCE_MS) next = noFace ? 'away' : 'distracted';
+          distractedSinceRef.current = noFace ? null : (distractedSinceRef.current ?? now);
+          if (audioRef.current && !chimedRef.current && distractedSinceRef.current !== null
+              && now - distractedSinceRef.current >= CHIME_AFTER_MS) {
+            chimedRef.current = true;
+            playChime(audioRef.current);
+          }
+        }
+        focusStateRef.current = next;
+        setFocusState(next);
       } catch (err) {
         console.error("Failed to parse message:", err);
         console.error("Raw message:", event.data);
-        setStatus(`Parse Error: ${event.data}`);
       }
     };
 
@@ -396,16 +603,14 @@ useEffect(() => {
       if (socketRef.current !== socket) return;
       console.error("❌ WebSocket error:", err);
       console.error("Is MediaPipe backend running on", MEDIAPIPE_API_URL, "?");
-      setStatus("⚠️ Connection Error - Check if backend is running");
-      setBackendConnected(false);
     };
 
     socket.onclose = (event) => {
       if (socketRef.current !== socket) return;
       if (DEBUG_LOGS) console.log("🔌 WebSocket connection closed. Code:", event.code, "Reason:", event.reason);
-      setStatus("Disconnected - Backend may not be running");
-      setBackendConnected(false);
       setBackendLost(true);
+      // No more scores: the strip stops drawing the last state
+      focusStateRef.current = null;
     };
 
     return () => {
@@ -568,139 +773,141 @@ const handleEndSession = () => {
   const endSessionRef = useRef(handleEndSession);
   endSessionRef.current = handleEndSession;
 
-  const handleReplay = () => {
-    window.location.reload();
+  const toggleCamera = () => {
+    const hidden = !hideCamera;
+    setHideCamera(hidden);
+    try {
+      localStorage.setItem(HIDE_CAMERA_KEY, hidden ? '1' : '0');
+    } catch {
+      // Storage unavailable: the choice lasts until the page is left
+    }
   };
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  const toggleChime = () => {
+    if (audioRef.current) {
+      audioRef.current.close();
+      audioRef.current = null;
+      setChimeOn(false);
+    } else {
+      audioRef.current = new AudioContext();
+      setChimeOn(true);
+    }
   };
+
+  const remaining = Math.max(duration * 60 - elapsedTime, 0);
+  const connectionLost = sessionStarted && backendLost;
+  const status = connectionLost ? { label: 'Not tracking', color: NEUTRAL_COLOR }
+    : focusState ? FOCUS_STATES[focusState] : { label: 'Starting', color: NEUTRAL_COLOR };
+  const reason = focusState === 'distracted' && !connectionLost
+    ? [...cheatEvents].sort((a, b) => a - b).map((code) => DISTRACTION_REASONS[code]).filter(Boolean).join(', ')
+    : '';
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 relative overflow-hidden">
-      {/* Background decorative elements */}
-      <div className="absolute inset-0">
-        <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-gradient-to-r from-blue-500/10 to-cyan-500/10 rounded-full blur-3xl opacity-30"></div>
-        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-gradient-to-l from-blue-500/10 to-cyan-500/10 rounded-full blur-3xl opacity-20"></div>
-      </div>
-
-      {/* Progress Bar - Fixed at top */}
-      <div className="fixed top-0 left-0 right-0 z-50">
-        <div className="h-2 bg-gray-800/50 backdrop-blur-sm">
-          <div
-            className="h-full bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 transition-all duration-1000 ease-out shadow-blue-500/25"
-            style={{ width: `${sessionProgress}%` }}
-          ></div>
-        </div>
-
-        {/* Session info overlay */}
-        <div className="absolute top-4 left-6 bg-gray-900/80 backdrop-blur-sm rounded-lg px-4 py-2 border border-gray-700">
-          <div className="flex items-center space-x-4 text-sm">
-            <div className="text-white font-medium">{formatTime(elapsedTime)} / {duration}:00</div>
-            <div className="text-blue-300 font-medium">{Math.round(sessionProgress)}%</div>
-          </div>
-        </div>
-
-        <div className="absolute top-4 right-6 bg-gray-900/80 backdrop-blur-sm rounded-lg px-4 py-2 border border-gray-700">
-          <div className="flex items-center space-x-2">
-            <div className={`w-2 h-2 ${status.includes('Error') || status.includes('denied') ? 'bg-red-400' : 'bg-green-400'} rounded-full animate-pulse`}></div>
-            <span className="text-white text-sm font-medium">{status}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Content */}
-      <div className="relative z-10 flex flex-col items-center justify-center min-h-screen px-6 pt-20 pb-32">
-        
-        {/* Goal Display */}
-        <div className="mb-8 text-center">
-          <div className="inline-flex items-center space-x-2 bg-gray-800/30 border border-blue-500/30 rounded-full px-6 py-3 backdrop-blur-sm">
-            <div className="w-2 h-2 bg-blue-300 rounded-full animate-pulse"></div>
-            <span className="text-white font-medium">🎯 {goal}</span>
-          </div>
-        </div>
-
-        {/* Webcam Video - Bigger and Centered */}
-        <div className="relative group mb-6">
-          <div className="absolute inset-0 bg-gradient-to-r from-blue-500/10 to-cyan-500/10 rounded-3xl blur-xl opacity-50 group-hover:opacity-70 transition-opacity duration-300"></div>
-          <div className="relative bg-gray-900/50 backdrop-blur-sm border-2 border-blue-500/30 rounded-3xl overflow-hidden shadow-blue-500/25 shadow-2xl">
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-[480px] h-[360px] md:w-[640px] md:h-[480px] lg:w-[800px] lg:h-[600px] object-cover"
-              aria-label="Live webcam feed for focus tracking"
-            />
-            
-            {/* Video overlay indicators */}
-            <div className="absolute top-6 left-6 flex items-center space-x-3">
-              <div className="w-4 h-4 bg-red-500 rounded-full animate-pulse shadow-lg shadow-red-500/50"></div>
-              <span className="text-white text-base font-medium bg-black/60 backdrop-blur-sm px-3 py-2 rounded-lg">LIVE</span>
+    <div className="min-h-screen bg-gray-900 text-gray-100">
+      <div className="mx-auto flex min-h-screen w-full max-w-sm flex-col gap-6 px-4 py-4">
+        <header className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div role="status" className="flex items-center gap-2 text-base font-medium">
+              <StatusDot color={status.color} />
+              {status.label}
             </div>
+            <div className="min-h-4 pl-[18px] text-xs text-gray-400">{reason}</div>
           </div>
-        </div>
-
-        {/* Live Focus Score Box */}
-        <div className="w-full max-w-4xl flex flex-col items-center space-y-4" aria-live="polite" aria-atomic="true">
-          {focusScore !== null && (
-            <div className={`flex items-center justify-center px-8 py-4 rounded-2xl shadow-lg border-2 ${distraction ? 'border-red-400 bg-red-900/30' : 'border-green-400 bg-green-900/30'} mb-2`}
-              style={{ minWidth: 220 }}>
-              <span className={`text-3xl font-bold ${distraction ? 'text-red-300' : 'text-green-300'} drop-shadow`}>{focusScore}</span>
-              <span className="ml-2 text-lg text-white/80 font-medium">Focus Score</span>
-              {distraction && <span className="ml-4 px-3 py-1 rounded-full bg-red-500/80 text-white text-xs font-semibold animate-pulse">Distraction detected</span>}
+          {confirmingEnd ? (
+            <div className="flex shrink-0 items-center gap-1 text-sm">
+              <button
+                onClick={handleEndSession}
+                className="rounded-md bg-gray-100 px-3 py-1 font-medium text-gray-900 hover:bg-white transition-colors"
+              >
+                End now?
+              </button>
+              <button
+                onClick={() => setConfirmingEnd(false)}
+                className="rounded-md px-2 py-1 text-gray-300 hover:text-gray-100 transition-colors"
+              >
+                Keep going
+              </button>
             </div>
+          ) : (
+            <button
+              onClick={() => setConfirmingEnd(true)}
+              className="shrink-0 rounded-md border border-white/15 px-3 py-1 text-sm hover:bg-white/5 transition-colors"
+            >
+              End
+            </button>
           )}
-          
-          {/* Warning if backend connected but score is 0 */}
-          {backendConnected && focusScore === 0 && (
-            <div className="mt-2 bg-yellow-500/20 border border-yellow-500/50 rounded-xl p-4 max-w-md">
-              <div className="text-yellow-300 font-medium mb-2">⚠️ Score is 0 - Possible Issues:</div>
-              <ul className="text-yellow-200/80 text-sm space-y-1 list-disc list-inside">
-                <li>Make sure your face is clearly visible to the camera</li>
-                <li>Ensure good lighting (not too dark or bright)</li>
-                <li>Look directly at the screen/camera</li>
-                <li>Backend may still be initializing face detection</li>
-              </ul>
-            </div>
-          )}
-          
-          {/* Warning if backend not connected */}
-          {!backendConnected && (
-            <div className="mt-2 bg-red-500/20 border border-red-500/50 rounded-xl p-4 max-w-md">
-              <div className="text-red-300 font-medium mb-2">❌ Not Connected to MediaPipe Backend</div>
-              <div className="text-red-200/80 text-sm">
-                Check browser console (F12) for connection details.
-                <br/>Backend should be running on: <code className="bg-black/30 px-2 py-1 rounded">{MEDIAPIPE_API_URL}</code>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+        </header>
 
-      {/* Bottom Controls - Fixed position */}
-      <div className="fixed bottom-8 left-1/2 transform -translate-x-1/2 z-50">
-        <div className="flex items-center space-x-4">
-          <button
-            onClick={handleReplay}
-            className="group flex items-center space-x-2 bg-gray-800/80 hover:bg-gray-700/80 border border-blue-500/30 text-white px-6 py-3 rounded-xl transition-all duration-300 backdrop-blur-sm shadow-blue-500/25"
-            aria-label="Restart session"
-          >
-            <RotateCcw className="w-5 h-5 group-hover:rotate-180 transition-transform duration-500" />
-            <span className="font-medium">Restart</span>
-          </button>
-          
-          <button
-            onClick={handleEndSession}
-            className="group flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-8 py-3 rounded-xl font-semibold transition-all duration-300 transform hover:scale-105 shadow-blue-500/25 shadow-lg"
-            aria-label="End focus session"
-          >
-            <Square className="w-5 h-5" />
-            <span>End Session</span>
-          </button>
+        {connectionLost && (
+          <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-3 text-sm">
+            <div className="font-medium">Connection lost</div>
+            <div className="mt-0.5 text-gray-400">Focus tracking has stopped for this session.</div>
+            <button
+              onClick={handleEndSession}
+              className="mt-3 rounded-md bg-gray-100 px-3 py-1 font-medium text-gray-900 hover:bg-white transition-colors"
+            >
+              See summary
+            </button>
+          </div>
+        )}
+
+        {showHiddenNote && !connectionLost && (
+          <div className="flex items-start gap-3 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-gray-300">
+            <p className="flex-1">Tracking paused while this window was hidden. Keep it visible beside your work.</p>
+            <button
+              onClick={() => setShowHiddenNote(false)}
+              aria-label="Dismiss"
+              className="-m-1 p-1 text-gray-400 hover:text-gray-100 transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        <div className="text-center">
+          <div className="text-6xl font-light tabular-nums tracking-tight">{formatClock(remaining)}</div>
+          <div className="mt-1 text-sm tabular-nums text-gray-400">of {formatClock(duration * 60)}</div>
         </div>
+
+        <FocusStrip runs={strip.runs} from={strip.from} />
+
+        {/* Hide camera shrinks this out of sight instead of unmounting it: the face tracking reads the video */}
+        <section
+          aria-hidden={hideCamera || undefined}
+          className={hideCamera
+            ? 'pointer-events-none fixed left-0 top-0 h-px w-px overflow-hidden opacity-0'
+            : 'flex flex-col items-center gap-3'}
+        >
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="aspect-[4/3] w-44 -scale-x-100 rounded-xl bg-black object-cover"
+            aria-label="Your camera preview"
+          />
+          {!hideCamera && <GazeMeter gaze={gaze} main={screenRanges.main} second={screenRanges.second} />}
+        </section>
+
+        <footer className="mt-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs text-gray-400">
+          <span>Video never leaves this device</span>
+          <div className="flex gap-4">
+            <button
+              aria-pressed={hideCamera}
+              onClick={toggleCamera}
+              className={`${TEXT_TOGGLE} ${hideCamera ? 'text-gray-100 underline' : ''}`}
+            >
+              Hide camera
+            </button>
+            <button
+              aria-pressed={chimeOn}
+              onClick={toggleChime}
+              className={`${TEXT_TOGGLE} ${chimeOn ? 'text-gray-100 underline' : ''}`}
+            >
+              Chime <span aria-hidden="true">{chimeOn ? 'on' : 'off'}</span>
+            </button>
+          </div>
+        </footer>
       </div>
 
       {/* Calibration overlay: covers the session until calibration is done or skipped */}

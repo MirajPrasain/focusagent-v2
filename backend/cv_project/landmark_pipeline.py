@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 #
 #   landmark message
 #     ├── headPose yaw + eye blendshapes -> gaze_yaw
-#     └── points + gaze_yaw + faceCount   -> get_gaze_score() -> {"score", "cheat_events"} sent to the client
+#     └── points + gaze_yaw + faceCount   -> get_gaze_score() -> {"score", "cheat_events", "gaze"} sent to the client
 #                                                             -> gaze_scores, read by the post-session charts
 #
 #   calibration message {"phase": ...} (start of the session, see CALIBRATION_RECORDING_PHASES)
@@ -169,8 +169,9 @@ class LandmarkPipeline:
 
     def handle_text_message(self, text):
         """Handles one text message and returns the text to send back to the client, or None: the calibration
-        result for the calibration "done" message, {"score", "cheat_events", "distracted"} for a scored landmark
-        message, and SESSION_ENDED ({"type": "session_ended"}) for a landmark message after the session is over."""
+        result for the calibration "done" message, {"score", "cheat_events", "distracted", "gaze"} for a scored
+        landmark message (gaze: gaze_yaw in degrees, null when there's no face), and SESSION_ENDED
+        ({"type": "session_ended"}) for a landmark message after the session is over."""
         try:
             message = json.loads(text)
         except json.JSONDecodeError as e:
@@ -306,7 +307,8 @@ class LandmarkPipeline:
             if score is not None:
                 self.gaze_scores.append((time.monotonic() - self.session_started, score))
                 reply = json.dumps({"score": score, "cheat_events": cheat_events,
-                                    "distracted": score < DISTRACTED_BELOW})
+                                    "distracted": score < DISTRACTED_BELOW,
+                                    "gaze": None if gaze_yaw is None else round(gaze_yaw, 1)})
 
         self.log_if_due(gaze_yaw, score)
         return reply
