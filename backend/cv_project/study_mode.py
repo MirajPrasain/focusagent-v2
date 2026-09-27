@@ -77,6 +77,12 @@ def has_all_landmarks(landmarks):
     return all(idx in landmarks for idx in LANDMARK_INDICES)
 
 
+# Pipeline: both (landmark JSON + JPEG frames). get_focus_score uses it; landmark_pipeline.py logs it
+def get_iris_ratios(landmarks):
+    """(horizontal, vertical) iris position within the eye, 0.5 = centered. Needs has_all_landmarks."""
+    return iris_position_ratio(landmarks[468], landmarks[33], landmarks[133], landmarks[159], landmarks[145])
+
+
 # --- Focus Score Function ---
 # Pipeline: both (landmark JSON + JPEG frames). Landmark JSON calls it from study_ws.py with its own state;
 # JPEG frames call it from process_frame with video_state
@@ -88,7 +94,6 @@ def get_focus_score(landmarks, state): #same logic as py file
     eye_bottom = landmarks[145]
     eye_left = landmarks[33]
     eye_right = landmarks[133]
-    iris_center = landmarks[468]
     nose_tip = landmarks[1]
     left_temple = landmarks[234]
     right_temple = landmarks[454]
@@ -96,7 +101,7 @@ def get_focus_score(landmarks, state): #same logic as py file
     eye_level = landmarks[151]
 
     eye_aspect_ratio = eye_openness(eye_top, eye_bottom, eye_left, eye_right)
-    iris_horizontal, iris_vertical = iris_position_ratio(iris_center, eye_left, eye_right, eye_top, eye_bottom)
+    iris_horizontal, iris_vertical = get_iris_ratios(landmarks)
     head_tilt_value = head_tilt_ratio(left_temple, right_temple, nose_tip)
     head_down_value = head_down_ratio(nose_tip, chin, eye_level)
 
