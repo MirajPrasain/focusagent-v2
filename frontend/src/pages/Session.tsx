@@ -113,7 +113,7 @@ const FOCUS_STATES: Record<FocusState, { label: string; dot: DotState }> = {
 };
 
 // The label leaves Focused only once the score has been below 40 this long without a break. Display only: the
-// distraction count and the debrief's average still use every score
+// backend's scoring and the session summary don't use it
 const LABEL_DEBOUNCE_MS = 2000;
 // With Chime on: one chime after this long distracted without a break, then none until focused again
 const CHIME_AFTER_MS = 10000;
@@ -230,12 +230,6 @@ function playChime(audio: AudioContext) {
   tone.stop(t + 1.2);
 }
 
-interface DistractionEvent {
-  timestamp: number;
-  type: string;
-  count: number;
-}
-
 function Session() {
   const [searchParams] = useSearchParams();
   const duration = parseInt(searchParams.get("duration") || "25");
@@ -243,7 +237,6 @@ function Session() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
-  const [distraction, setDistraction] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0);
   const sessionStartTime = useRef(Date.now());
   const navigate = useNavigate();
@@ -293,10 +286,6 @@ function Session() {
   const [cameraError, setCameraError] = useState(false);
   const [modelError, setModelError] = useState(false);
   const [backendLost, setBackendLost] = useState(false);
-
-  const [distractionHistory, setDistractionHistory] = useState<DistractionEvent[]>([]);
-  // Sum and count of every score received during the session: the debrief's focus score is their average
-  const scoreTotalsRef = useRef({ sum: 0, count: 0 });
 
   // API URL - MediaPipe backend for face detection, AI messages, and TTS
   const MEDIAPIPE_API_URL = import.meta.env.VITE_MEDIAPIPE_API_URL || 'http://localhost:8001';
@@ -482,17 +471,6 @@ function Session() {
     audioRef.current?.close();
   }, []);
 
-// Track distraction events for the session summary
-useEffect(() => {
-  if (!distraction) return;
-
-  setDistractionHistory(prev => [...prev, {
-    timestamp: Date.now(),
-    type: 'distraction',
-    count: prev.length + 1
-  }]);
-}, [distraction]);
-
   // Setup WebSocket connection (the landmark effect above sends on it)
   useEffect(() => {
     if (DEBUG_LOGS) console.log('Attempting to connect to MediaPipe backend:', MEDIAPIPE_API_URL);
@@ -547,13 +525,6 @@ useEffect(() => {
 
         // Debug logging
         if (DEBUG_LOGS) console.log('Focus Score received:', score, 'Type:', typeof score);
-
-        if (typeof score === 'number') {
-          scoreTotalsRef.current.sum += score;
-          scoreTotalsRef.current.count += 1;
-        }
-
-        setDistraction(distracted);
 
         // Live view. gaze is null when there's no face
         const noFace = typeof data.gaze !== 'number';
@@ -693,11 +664,9 @@ useEffect(() => {
     return () => clearTimeout(timer);
   }, [calibrationStatus]);
 
-  // The session starts: from here on scores count, and the distraction count and score average start from zero
+  // The session starts: from here on scores count
   useEffect(() => {
     if (!sessionStarted) return;
-    setDistractionHistory([]);
-    scoreTotalsRef.current = { sum: 0, count: 0 };
     sessionStartedRef.current = true;
   }, [sessionStarted]);
 
@@ -742,19 +711,11 @@ const handleEndSession = () => {
       tracks.forEach((track: MediaStreamTrack) => track.stop());
     }
 
-    // The session's focus score is the average of every score received during it
-    const { sum, count } = scoreTotalsRef.current;
-    localStorage.setItem("lastSession", JSON.stringify({
-      duration,
-      minute: Math.floor((Date.now() - sessionStartTime.current) / 60000),
-      distractionHistory: distractionHistory,
-      focusScore: count > 0 ? Math.round(sum / count) : null
-    }));
     navigate("/summary");
   };
 
-  // The session timer and the websocket are set up once, so they end the session through this ref: calling
-  // handleEndSession directly would save the distraction history and score from when they were set up
+  // The session timer and the websocket are set up once, so they end the session through this ref rather than
+  // keeping the handleEndSession from the render they were set up in
   const endSessionRef = useRef(handleEndSession);
   endSessionRef.current = handleEndSession;
 
