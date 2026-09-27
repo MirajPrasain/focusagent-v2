@@ -748,10 +748,9 @@ const handleEndSession = () => {
       duration,
       minute: Math.floor((Date.now() - sessionStartTime.current) / 60000),
       distractionHistory: distractionHistory,
-      totalDistractions: distractionHistory.length,
       focusScore: count > 0 ? Math.round(sum / count) : null
     }));
-    navigate("/post-session");
+    navigate("/summary");
   };
 
   // The session timer and the websocket are set up once, so they end the session through this ref: calling

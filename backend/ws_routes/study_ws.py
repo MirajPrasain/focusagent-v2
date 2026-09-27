@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# The most recent session's pipeline, kept after its connection closes so the post-session charts
+# The most recent session's pipeline, kept after its connection closes so the session summary
 # (ws_routes/charts.py) can read its scores. One slot for the whole server: a new session replaces it.
 _latest_session = None
 

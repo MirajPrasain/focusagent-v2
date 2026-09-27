@@ -15,7 +15,7 @@ app.add_middleware(
 # Only include study mode WebSocket
 app.include_router(study_ws.router)
 
-# Include charts router
+# Session summary endpoint
 app.include_router(charts.router)
 
 

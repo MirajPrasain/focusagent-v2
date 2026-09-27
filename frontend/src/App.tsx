@@ -3,7 +3,7 @@ import { Routes, Route } from "react-router-dom";
 import Home from './pages/Home';
 import PreSession from './pages/PreSession';
 import Session from './pages/Session'; 
-import PostSession from './pages/PostSession'; 
+import Summary from './pages/Summary';
 import DataCollect from './pages/DataCollect';
 
 
@@ -16,7 +16,7 @@ function App() {
         <Route path="/" element={<Home />} />
         <Route path="/pre-session" element={<PreSession />} />
         <Route path= "/session" element={<Session />} /> 
-        <Route path="/post-session" element={<PostSession />} />
+        <Route path="/summary" element={<Summary />} />
         {/* Dev-only data collection tool; intentionally not linked in nav */}
         <Route path="/data-collect" element={<DataCollect />} />
        

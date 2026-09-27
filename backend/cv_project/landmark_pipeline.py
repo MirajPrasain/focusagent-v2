@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 #   landmark message
 #     ├── headPose yaw + eye blendshapes -> gaze_yaw
 #     └── points + gaze_yaw + faceCount   -> get_gaze_score() -> {"score", "cheat_events", "gaze"} sent to the client
-#                                                             -> gaze_scores, read by the post-session charts
+#                                                             -> gaze_scores, read by the session summary
 #
 #   calibration message {"phase": ...} (start of the session, see CALIBRATION_RECORDING_PHASES)
 #     until "done", landmark messages only collect gaze_yaw (during recordings); nothing is scored
@@ -55,7 +55,8 @@ SECOND_SCREEN_MARGIN_DEG = 5
 MIN_MAIN_RANGE_DEG = 6
 
 # The one definition of distracted: a score below DISTRACTED_BELOW. It drives the live badge and distraction count
-# (the "distracted" flag sent with each score) and the post-session donut (ws_routes/charts.py)
+# (the "distracted" flag sent with each score) and the session summary (ws_routes/charts.py, which also requires
+# it to last MIN_DISTRACTED_SECONDS)
 DISTRACTED_BELOW = 40
 # Looking off screen alone leaves 100 - 70 = 30, below DISTRACTED_BELOW
 GAZE_OFF_SCREEN_PENALTY = 70
@@ -131,7 +132,7 @@ def get_gaze_score(landmarks, gaze_yaw, state, screen_ranges=(DEFAULT_SCREEN_RAN
 
 class LandmarkPipeline:
     """One study session (one /ws/study connection): calibration, the live score, and the session's scores for
-    the post-session charts (ws_routes/charts.py)."""
+    the session summary (ws_routes/charts.py)."""
 
     def __init__(self, session_duration):
         # Planned session length in seconds. The session clock starts when calibration succeeds or is skipped
