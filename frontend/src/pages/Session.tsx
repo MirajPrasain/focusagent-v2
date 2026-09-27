@@ -56,7 +56,7 @@ function Session() {
     const LOG_INTERVAL_MS = 1000;
     // Same indices backend/cv_project/study_mode.py uses for scoring
     const LANDMARK_INDICES = [159, 145, 33, 133, 468, 1, 234, 454, 152, 151];
-    // Same 10 features backend/cv_project/distraction_classifier.py was trained on
+    // 8 gaze features for backend/cv_project/distraction_classifier.py, plus the 2 eyeBlink values for the eyes-closed rule in cv_project/landmark_pipeline.py
     const BLENDSHAPE_NAMES = [
       'eyeBlinkLeft', 'eyeBlinkRight',
       'eyeLookDownLeft', 'eyeLookDownRight',
