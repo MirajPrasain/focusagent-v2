@@ -3,6 +3,9 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import { X } from 'lucide-react';
 import { detectFaces, faceModelFailed } from '../lib/faceLandmarker'
 import { speak, speakAndWait, sleep } from '../lib/speech'
+import Button from '../components/ui/Button'
+import Card from '../components/ui/Card'
+import StatusDot, { type DotState } from '../components/ui/StatusDot'
 
 // Set to true to re-enable websocket/TTS/session console logs
 const DEBUG_LOGS = false;
@@ -94,24 +97,19 @@ function ScanDot({ moving }: { moving: boolean }) {
   const { x, y } = borderPoint(moving ? t : 0);
   return (
     <div
-      className="absolute w-6 h-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-400 shadow-lg shadow-cyan-400/50"
+      className="absolute w-6 h-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent"
       style={{ left: `${x}%`, top: `${y}%` }}
     />
   );
 }
 
-// Live status colors. Local stand-ins for the shared design tokens
-const FOCUSED_COLOR = '#3987e5';
-const DISTRACTED_COLOR = '#e66767';
-const NEUTRAL_COLOR = '#9ca3af';
-
 // focused: score at or above the backend's DISTRACTED_BELOW (40); distracted: below it with a face in view;
 // away: below it with no face, shown gray rather than red (the summary still counts it as distracted)
 type FocusState = 'focused' | 'distracted' | 'away';
-const FOCUS_STATES: Record<FocusState, { label: string; color: string }> = {
-  focused: { label: 'Focused', color: FOCUSED_COLOR },
-  distracted: { label: 'Distracted', color: DISTRACTED_COLOR },
-  away: { label: "Can't see you", color: NEUTRAL_COLOR },
+const FOCUS_STATES: Record<FocusState, { label: string; dot: DotState }> = {
+  focused: { label: 'Focused', dot: 'focused' },
+  distracted: { label: 'Distracted', dot: 'distracted' },
+  away: { label: "Can't see you", dot: 'away' },
 };
 
 // The label leaves Focused only once the score has been below 40 this long without a break. Display only: the
@@ -139,19 +137,11 @@ const DEFAULT_MAIN_RANGE: GazeRange = [-15, 15];
 
 const HIDE_CAMERA_KEY = 'focusagent.hideCamera';
 
-const TEXT_TOGGLE = 'underline-offset-4 hover:text-gray-100 transition-colors';
-
 // mm:ss
 function formatClock(totalSeconds: number) {
   const mins = Math.floor(totalSeconds / 60);
   const secs = totalSeconds % 60;
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-}
-
-function StatusDot({ color }: { color: string }) {
-  return (
-    <span aria-hidden="true" className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
-  );
 }
 
 // One stretch of the same state on the focus strip, in Date.now() milliseconds
@@ -163,27 +153,23 @@ function FocusStrip({ runs, from }: { runs: StripRun[]; from: number }) {
   const at = (t: number) => Math.min(Math.max((t - from) / STRIP_WINDOW_MS, 0), 1) * 100;
   return (
     <div>
-      <div className="relative h-2 overflow-hidden rounded-full bg-white/10">
+      <div className="relative h-2 overflow-hidden rounded-full bg-border">
         {runs.map((run) => (
           <div
             key={run.start}
-            className="absolute inset-y-0"
-            style={{
-              left: `${at(run.start)}%`,
-              width: `${at(run.end) - at(run.start)}%`,
-              backgroundColor: run.state === 'focused' ? FOCUSED_COLOR : DISTRACTED_COLOR,
-            }}
+            className={`absolute inset-y-0 ${run.state === 'focused' ? 'bg-accent' : 'bg-distracted'}`}
+            style={{ left: `${at(run.start)}%`, width: `${at(run.end) - at(run.start)}%` }}
           />
         ))}
       </div>
-      <div className="mt-1.5 flex items-center gap-3 text-[11px] text-gray-400">
+      <div className="mt-1.5 flex items-center gap-3 text-[11px] text-fg-secondary">
         <span>Last 5 minutes</span>
         <span className="ml-auto inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: FOCUSED_COLOR }} />
+          <StatusDot state="focused" size="sm" />
           Focused
         </span>
         <span className="inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: DISTRACTED_COLOR }} />
+          <StatusDot state="distracted" size="sm" />
           Distracted
         </span>
       </div>
@@ -200,22 +186,22 @@ function GazeMeter({ gaze, main, second }: { gaze: number | null; main: GazeRang
   const ranges = [{ label: 'Main', range: main }, ...(second ? [{ label: 'Second', range: second }] : [])];
   return (
     <div className="w-full" role="img" aria-label="Where you're looking, against your screens">
-      <div className="relative h-3 rounded-full bg-white/10">
+      <div className="relative h-3 rounded-full bg-border">
         {ranges.map(({ label, range: [low, high] }) => (
           <div
             key={label}
-            className="absolute inset-y-0 rounded-sm bg-[#3987e5]/35"
+            className="absolute inset-y-0 rounded-sm bg-accent/35"
             style={{ left: `${at(high)}%`, width: `${at(low) - at(high)}%` }}
           />
         ))}
         {gaze !== null && (
           <div
-            className="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gray-100 ring-2 ring-gray-900 transition-[left] duration-150"
+            className="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-fg ring-2 ring-page transition-[left] duration-150"
             style={{ left: `${at(gaze)}%` }}
           />
         )}
       </div>
-      <div className="relative mt-1 h-4 text-[11px] text-gray-400">
+      <div className="relative mt-1 h-4 text-[11px] text-fg-secondary">
         {ranges.map(({ label, range: [low, high] }) => (
           <span
             key={label}
@@ -509,16 +495,16 @@ useEffect(() => {
 
   // Setup WebSocket connection (the landmark effect above sends on it)
   useEffect(() => {
-    if (DEBUG_LOGS) console.log('🔌 Attempting to connect to MediaPipe backend:', MEDIAPIPE_API_URL);
+    if (DEBUG_LOGS) console.log('Attempting to connect to MediaPipe backend:', MEDIAPIPE_API_URL);
     const protocol = MEDIAPIPE_API_URL.startsWith('https://') ? 'wss://' : 'ws://';
     const wsUrl = `${protocol}${MEDIAPIPE_API_URL.replace('http://', '').replace('https://', '')}/ws/study`;
-    if (DEBUG_LOGS) console.log('🔌 WebSocket URL:', wsUrl);
+    if (DEBUG_LOGS) console.log('WebSocket URL:', wsUrl);
     
     const socket = new WebSocket(wsUrl);
     socketRef.current = socket;
 
     socket.onopen = () => {
-      if (DEBUG_LOGS) console.log("✅ Connected to backend Study WebSocket server");
+      if (DEBUG_LOGS) console.log("Connected to backend Study WebSocket server");
       socket.send(JSON.stringify({ duration }));
     };
 
@@ -528,7 +514,7 @@ useEffect(() => {
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (DEBUG_LOGS) console.log('📊 Received from backend:', data);
+        if (DEBUG_LOGS) console.log('Received from backend:', data);
 
         // Calibration result (reply to "done"): only matters while the overlay waits for it. Only "ok" starts the
         // session; too_narrow and not_calibrated show Redo / Skip
@@ -601,13 +587,13 @@ useEffect(() => {
     // Both handlers ignore an old socket (StrictMode's first mount in dev), so it can't mark the live one as lost
     socket.onerror = (err) => {
       if (socketRef.current !== socket) return;
-      console.error("❌ WebSocket error:", err);
+      console.error("WebSocket error:", err);
       console.error("Is MediaPipe backend running on", MEDIAPIPE_API_URL, "?");
     };
 
     socket.onclose = (event) => {
       if (socketRef.current !== socket) return;
-      if (DEBUG_LOGS) console.log("🔌 WebSocket connection closed. Code:", event.code, "Reason:", event.reason);
+      if (DEBUG_LOGS) console.log("WebSocket connection closed. Code:", event.code, "Reason:", event.reason);
       setBackendLost(true);
       // No more scores: the strip stops drawing the last state
       focusStateRef.current = null;
@@ -744,7 +730,7 @@ useEffect(() => {
   const answerSecondScreen = (yes: boolean) => secondScreenAnswerRef.current?.(yes);
 
 const handleEndSession = () => {
-    if (DEBUG_LOGS) console.log("🚀 Ending Study Session...");
+    if (DEBUG_LOGS) console.log("Ending Study Session...");
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.close();
     }
@@ -796,77 +782,61 @@ const handleEndSession = () => {
 
   const remaining = Math.max(duration * 60 - elapsedTime, 0);
   const connectionLost = sessionStarted && backendLost;
-  const status = connectionLost ? { label: 'Not tracking', color: NEUTRAL_COLOR }
-    : focusState ? FOCUS_STATES[focusState] : { label: 'Starting', color: NEUTRAL_COLOR };
+  const status: { label: string; dot: DotState } = connectionLost ? { label: 'Not tracking', dot: 'off' }
+    : focusState ? FOCUS_STATES[focusState] : { label: 'Starting', dot: 'off' };
   const reason = focusState === 'distracted' && !connectionLost
     ? [...cheatEvents].sort((a, b) => a - b).map((code) => DISTRACTION_REASONS[code]).filter(Boolean).join(', ')
     : '';
 
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100">
+    <div className="min-h-screen bg-page text-fg">
       <div className="mx-auto flex min-h-screen w-full max-w-sm flex-col gap-6 px-4 py-4">
         <header className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div role="status" className="flex items-center gap-2 text-base font-medium">
-              <StatusDot color={status.color} />
+              <StatusDot state={status.dot} />
               {status.label}
             </div>
-            <div className="min-h-4 pl-[18px] text-xs text-gray-400">{reason}</div>
+            <div className="min-h-4 pl-[18px] text-xs text-fg-secondary">{reason}</div>
           </div>
           {confirmingEnd ? (
             <div className="flex shrink-0 items-center gap-1 text-sm">
-              <button
-                onClick={handleEndSession}
-                className="rounded-md bg-gray-100 px-3 py-1 font-medium text-gray-900 hover:bg-white transition-colors"
-              >
-                End now?
-              </button>
-              <button
-                onClick={() => setConfirmingEnd(false)}
-                className="rounded-md px-2 py-1 text-gray-300 hover:text-gray-100 transition-colors"
-              >
+              <Button size="sm" onClick={handleEndSession}>End now?</Button>
+              <Button variant="text" size="md" className="px-2 py-1" onClick={() => setConfirmingEnd(false)}>
                 Keep going
-              </button>
+              </Button>
             </div>
           ) : (
-            <button
-              onClick={() => setConfirmingEnd(true)}
-              className="shrink-0 rounded-md border border-white/15 px-3 py-1 text-sm hover:bg-white/5 transition-colors"
-            >
+            <Button variant="secondary" size="sm" className="shrink-0" onClick={() => setConfirmingEnd(true)}>
               End
-            </button>
+            </Button>
           )}
         </header>
 
         {connectionLost && (
-          <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-3 text-sm">
+          <Card padding="sm" className="text-sm">
             <div className="font-medium">Connection lost</div>
-            <div className="mt-0.5 text-gray-400">Focus tracking has stopped for this session.</div>
-            <button
-              onClick={handleEndSession}
-              className="mt-3 rounded-md bg-gray-100 px-3 py-1 font-medium text-gray-900 hover:bg-white transition-colors"
-            >
-              See summary
-            </button>
-          </div>
+            <div className="mt-0.5 text-fg-secondary">Focus tracking has stopped for this session.</div>
+            <Button size="sm" className="mt-3" onClick={handleEndSession}>See summary</Button>
+          </Card>
         )}
 
         {showHiddenNote && !connectionLost && (
-          <div className="flex items-start gap-3 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-gray-300">
+          <Card padding="sm" className="flex items-start gap-3 text-sm text-fg-secondary">
             <p className="flex-1">Tracking paused while this window was hidden. Keep it visible beside your work.</p>
             <button
               onClick={() => setShowHiddenNote(false)}
               aria-label="Dismiss"
-              className="-m-1 p-1 text-gray-400 hover:text-gray-100 transition-colors"
+              className="-m-1 p-1 text-fg-secondary hover:text-fg transition-colors"
             >
               <X className="h-4 w-4" />
             </button>
-          </div>
+          </Card>
         )}
 
         <div className="text-center">
           <div className="text-6xl font-light tabular-nums tracking-tight">{formatClock(remaining)}</div>
-          <div className="mt-1 text-sm tabular-nums text-gray-400">of {formatClock(duration * 60)}</div>
+          <div className="mt-1 text-sm tabular-nums text-fg-secondary">of {formatClock(duration * 60)}</div>
         </div>
 
         <FocusStrip runs={strip.runs} from={strip.from} />
@@ -889,35 +859,27 @@ const handleEndSession = () => {
           {!hideCamera && <GazeMeter gaze={gaze} main={screenRanges.main} second={screenRanges.second} />}
         </section>
 
-        <footer className="mt-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs text-gray-400">
+        <footer className="mt-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs text-fg-secondary">
           <span>Video never leaves this device</span>
           <div className="flex gap-4">
-            <button
-              aria-pressed={hideCamera}
-              onClick={toggleCamera}
-              className={`${TEXT_TOGGLE} ${hideCamera ? 'text-gray-100 underline' : ''}`}
-            >
+            <Button variant="text" size="sm" aria-pressed={hideCamera} onClick={toggleCamera}>
               Hide camera
-            </button>
-            <button
-              aria-pressed={chimeOn}
-              onClick={toggleChime}
-              className={`${TEXT_TOGGLE} ${chimeOn ? 'text-gray-100 underline' : ''}`}
-            >
+            </Button>
+            <Button variant="text" size="sm" aria-pressed={chimeOn} onClick={toggleChime}>
               Chime <span aria-hidden="true">{chimeOn ? 'on' : 'off'}</span>
-            </button>
+            </Button>
           </div>
         </footer>
       </div>
 
       {/* Calibration overlay: covers the session until calibration is done or skipped */}
       {calibrationStatus !== 'done' && (
-        <div className="fixed inset-0 z-[60] bg-gray-900/95 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[60] bg-page/95 backdrop-blur-sm">
           {calibrationView.dot !== 'none' && <ScanDot moving={calibrationView.dot === 'moving'} />}
 
           <div className="absolute inset-x-0 top-1/4 px-6 text-center">
-            <div className="text-sm text-blue-300 font-medium mb-2">Screen calibration</div>
-            <div className="text-2xl text-white font-semibold">
+            <div className="text-sm text-accent font-medium mb-2">Screen calibration</div>
+            <div className="text-2xl text-fg font-semibold">
               {calibrationStatus === 'waiting'
                 ? (cameraError || modelError
                   ? "Face tracking isn't available"
@@ -928,48 +890,44 @@ const handleEndSession = () => {
             </div>
             {calibrationStatus === 'waiting' && (
               <>
-                <div className="mt-2 text-gray-300">
+                <div className="mt-2 text-fg-secondary">
                   The page goes full screen while you follow a dot with your eyes.
                 </div>
-                <button
-                  onClick={startCalibration}
-                  disabled={!faceSeen}
-                  className="mt-8 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
+                <Button onClick={startCalibration} disabled={!faceSeen} className="mt-8">
                   Start calibration
-                </button>
+                </Button>
               </>
             )}
             {calibrationStatus === 'failed' && (
-              <div className="mt-2 text-gray-300">
+              <div className="mt-2 text-fg-secondary">
                 Redo the calibration, or skip to start the session with a default screen range.
               </div>
             )}
             {(cameraError || modelError || backendLost) && (
-              <div className="mt-6 mx-auto max-w-md space-y-2 text-sm text-red-200">
+              <div className="mt-6 mx-auto max-w-md space-y-2 text-sm text-fg">
                 {cameraError && (
-                  <div className="bg-red-500/20 border border-red-500/50 rounded-xl px-4 py-3">
+                  <div className="bg-distracted/10 border border-distracted/50 rounded-xl px-4 py-3">
                     The camera isn't available. Allow camera access for this site, then reload the page.
                   </div>
                 )}
                 {modelError && (
-                  <div className="bg-red-500/20 border border-red-500/50 rounded-xl px-4 py-3">
+                  <div className="bg-distracted/10 border border-distracted/50 rounded-xl px-4 py-3">
                     The face tracking model didn't load. Check your internet connection, then reload the page.
                   </div>
                 )}
                 {backendLost && (
-                  <div className="bg-red-500/20 border border-red-500/50 rounded-xl px-4 py-3">
+                  <div className="bg-distracted/10 border border-distracted/50 rounded-xl px-4 py-3">
                     Can't reach the FocusAgent server, so this session can't be tracked. Reload the page to try again.
                   </div>
                 )}
               </div>
             )}
             {calibrationView.countdown !== null && (
-              <div className="mt-6 text-6xl text-cyan-300 font-bold">{calibrationView.countdown}</div>
+              <div className="mt-6 text-6xl text-accent font-bold">{calibrationView.countdown}</div>
             )}
             {calibrationView.recording && (
-              <div className="mt-6 inline-flex items-center space-x-2 text-red-300 text-sm font-medium">
-                <span className="w-2 h-2 bg-red-400 rounded-full animate-pulse"></span>
+              <div className="mt-6 inline-flex items-center space-x-2 text-distracted text-sm font-medium">
+                <span className="w-2 h-2 bg-distracted rounded-full animate-pulse"></span>
                 <span>Recording</span>
               </div>
             )}
@@ -977,39 +935,25 @@ const handleEndSession = () => {
 
           {calibrationView.asking && (
             <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center gap-4 px-6">
-              <button
-                onClick={() => answerSecondScreen(true)}
-                className="bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300"
-              >
+              <Button onClick={() => answerSecondScreen(true)}>
                 Yes
-              </button>
-              <button
-                onClick={() => answerSecondScreen(false)}
-                className="bg-gray-800/80 hover:bg-gray-700/80 border border-blue-500/30 text-white px-6 py-3 rounded-xl font-medium transition-all duration-300"
-              >
+              </Button>
+              <Button variant="secondary" onClick={() => answerSecondScreen(false)}>
                 No
-              </button>
+              </Button>
             </div>
           )}
 
           <div className="absolute bottom-8 inset-x-0 flex justify-center gap-6">
             {calibrationStatus !== 'waiting' && (
-              <button
-                onClick={startCalibration}
-                className={calibrationStatus === 'failed'
-                  ? 'bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white px-6 py-3 rounded-xl font-semibold transition-all duration-300'
-                  : 'text-gray-400 hover:text-white text-sm underline underline-offset-4 transition-colors'}
-              >
+              <Button variant={calibrationStatus === 'failed' ? 'primary' : 'text'} onClick={startCalibration}>
                 Redo calibration
-              </button>
+              </Button>
             )}
             {calibrationStatus !== 'checking' && (
-              <button
-                onClick={skipCalibration}
-                className="text-gray-400 hover:text-white text-sm underline underline-offset-4 transition-colors"
-              >
+              <Button variant="text" onClick={skipCalibration}>
                 Skip
-              </button>
+              </Button>
             )}
           </div>
         </div>
