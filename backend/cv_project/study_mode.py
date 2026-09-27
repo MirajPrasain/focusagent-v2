@@ -7,11 +7,12 @@ from cv_project.geometry import eye_openness, iris_position_ratio, head_tilt_rat
 
 # Two pipelines use this module, both fed by the /ws/study websocket (ws_routes/study_ws.py):
 #   - Landmark JSON pipeline (text messages): the browser runs MediaPipe itself and sends landmark
-#     points plus eye blendshapes. The points are scored with get_focus_score and the blendshapes go to
-#     cv_project/distraction_classifier.py. Comparison logging only, never sent to the client.
+#     points plus eye blendshapes. cv_project/landmark_pipeline.py scores the points with get_focus_score
+#     and sends the blendshapes to cv_project/distraction_classifier.py. Comparison logging only for now,
+#     never sent to the client; it will replace the JPEG frame pipeline.
 #   - JPEG frame pipeline (binary messages): the browser sends webcam frames, study_ws.py decodes them
 #     and process_frame runs MediaPipe here on the server. This is the score the client receives and
-#     the post-session charts are built from.
+#     the post-session charts are built from, until the landmark JSON pipeline takes over.
 # Each function below is tagged with the pipeline(s) that use it.
 
 # --- Initialize Mediapipe ---
