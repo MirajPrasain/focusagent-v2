@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { ArrowRight } from 'lucide-react';
 import Button from '../components/ui/Button';
-import PageShell from '../components/ui/PageShell';
+import Eyebrow from '../components/ui/Eyebrow';
+import PageShell, { GUTTER } from '../components/ui/PageShell';
+import SegmentBar, { type SegmentTone } from '../components/ui/SegmentBar';
 import StatusDot from '../components/ui/StatusDot';
 
 // GET /summary (backend/ws_routes/charts.py): the most recent session, in whole seconds. A stretch is distracted
@@ -16,10 +19,10 @@ type SessionSummary = {
   segments: Segment[];
 };
 
-const SEGMENT_COLORS: Record<Segment['state'], string> = {
-  focused: 'bg-accent',
-  distracted: 'bg-distracted',
-  not_tracked: 'bg-away',
+const SEGMENT_TONES: Record<Segment['state'], SegmentTone> = {
+  focused: 'focused',
+  distracted: 'distracted',
+  not_tracked: 'away',
 };
 
 const API_URL = import.meta.env.VITE_MEDIAPIPE_API_URL || 'http://localhost:8001';
@@ -30,30 +33,44 @@ function formatClock(seconds: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-// The whole session from start to end, with time labels at the start, middle and end
+// The whole session from start to end, with time labels at every quarter
 function Timeline({ segments, total }: { segments: Segment[]; total: number }) {
+  const notTracked = segments.some((segment) => segment.state === 'not_tracked');
   return (
-    <div>
-      <div className="relative h-2 overflow-hidden rounded-full bg-border">
-        {segments.map((segment) => (
-          <div
-            key={segment.start}
-            className={`absolute inset-y-0 ${SEGMENT_COLORS[segment.state]}`}
-            style={{ left: `${(segment.start / total) * 100}%`, width: `${((segment.end - segment.start) / total) * 100}%` }}
-          />
-        ))}
+    <div className="rounded-[20px] border border-border bg-surface px-5 pb-5 pt-6 sm:px-7">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Eyebrow>Your session, start to finish</Eyebrow>
+        <div className="flex gap-[18px] text-[13px] text-fg-secondary">
+          <span className="inline-flex items-center gap-2"><StatusDot state="focused" size="sm" />Focused</span>
+          <span className="inline-flex items-center gap-2"><StatusDot state="distracted" size="sm" />Distracted</span>
+          {notTracked && <span className="inline-flex items-center gap-2"><StatusDot state="away" size="sm" />Not tracked</span>}
+        </div>
       </div>
-      <div className="mt-1.5 flex justify-between text-xs tabular-nums text-fg-muted">
-        <span>{formatClock(0)}</span>
-        <span>{formatClock(total / 2)}</span>
-        <span>{formatClock(total)}</span>
+      <SegmentBar
+        segments={segments.map((segment) => ({
+          key: segment.start,
+          left: (segment.start / total) * 100,
+          width: ((segment.end - segment.start) / total) * 100,
+          tone: SEGMENT_TONES[segment.state],
+        }))}
+        className="mt-6 h-14 rounded-lg"
+        segmentClassName="rounded-lg"
+      />
+      <div className="mt-3 flex justify-between font-mono text-[11px] text-fg-muted tabular-nums">
+        {[0, 0.25, 0.5, 0.75, 1].map((at) => <span key={at}>{formatClock(total * at)}</span>)}
       </div>
-      <div className="mt-3 flex gap-4 text-xs text-fg-secondary">
-        <span className="inline-flex items-center gap-1.5"><StatusDot state="focused" size="sm" /> Focused</span>
-        <span className="inline-flex items-center gap-1.5"><StatusDot state="distracted" size="sm" /> Distracted</span>
-        {segments.some((segment) => segment.state === 'not_tracked') && (
-          <span className="inline-flex items-center gap-1.5"><StatusDot state="away" size="sm" /> Not tracked</span>
-        )}
+    </div>
+  );
+}
+
+// One figure in the stats row, as a number and its unit
+function Stat({ label, value, unit }: { label: string; value: number; unit: string }) {
+  return (
+    <div className="px-6 py-5 sm:px-8 sm:py-6">
+      <Eyebrow>{label}</Eyebrow>
+      <div className="mt-3 text-[44px] font-light leading-none tracking-[-0.04em] tabular-nums">
+        {value}
+        <span className="ml-1.5 text-lg tracking-normal text-fg-secondary">{unit}</span>
       </div>
     </div>
   );
@@ -83,45 +100,77 @@ const Summary = () => {
     };
   }, []);
 
+  const again = (
+    <Button size="lg" onClick={() => navigate('/setup')}>
+      Start another session
+      <ArrowRight className="h-4 w-4" aria-hidden="true" />
+    </Button>
+  );
+
   let body;
-  if (failed) {
-    body = <p className="text-fg-secondary">Couldn't load this session's summary.</p>;
-  } else if (!summary) {
-    body = <p className="text-fg-secondary">Loading your summary...</p>;
-  } else if (summary.total_seconds === 0) {
-    body = <p className="text-fg-secondary">No focus data was recorded for this session.</p>;
+  if (failed || !summary || summary.total_seconds === 0) {
+    const message = failed ? "Couldn't load this session's summary."
+      : !summary ? 'Loading your summary...' : 'No focus data was recorded for this session.';
+    body = (
+      <div className="flex flex-1 flex-col items-center justify-center py-24 text-center">
+        <p role="status" className="text-xl text-fg-secondary">{message}</p>
+        {(failed || summary) && <div className="mt-8">{again}</div>}
+      </div>
+    );
   } else {
     const { total_seconds: total, focused_seconds: focused, not_tracked_seconds: notTracked,
       longest_focused_seconds: longest } = summary;
     // Minutes, or seconds for a session under a minute
     const inSeconds = total < 60;
-    const amount = (seconds: number) => (inSeconds ? `${seconds} sec` : `${Math.round(seconds / 60)} min`);
+    const unit = inSeconds ? 'sec' : 'min';
+    const value = (seconds: number) => (inSeconds ? seconds : Math.round(seconds / 60));
     // Focused share of the time that was tracked
     const tracked = total - notTracked;
     const pct = tracked > 0 ? Math.round((focused / tracked) * 100) : 0;
+    const distracted = Math.max(tracked - focused, 0);
     body = (
-      <>
-        <h1 className="text-4xl font-semibold tracking-tight">{amount(focused)} focused</h1>
-        <p className="mt-2 text-fg-secondary">
-          of {amount(total)} · {pct}%{notTracked > 0 && ' of tracked time'}
-        </p>
-        {notTracked > 0 && (
-          <p className="mt-1 text-fg-secondary">
-            {inSeconds ? `${notTracked} sec` : `${Math.max(1, Math.round(notTracked / 60))} min`} not tracked
-          </p>
-        )}
-        <p className="mt-6 text-sm">Longest focused stretch: {amount(longest)}</p>
-        <div className="mt-8">
+      <div className="flex flex-1 animate-fade-up flex-col justify-center py-12 xl:px-12">
+        <Eyebrow tone="accent">Session complete · {value(total)} {unit}</Eyebrow>
+        <div className="mt-6 flex flex-col gap-10 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h1 className="flex items-baseline gap-5">
+              <span className="text-[clamp(120px,17vw,240px)] font-extralight leading-[0.82] tracking-[-0.065em] tabular-nums">
+                {value(focused)}
+              </span>
+              <span className="flex flex-col">
+                <span className="text-4xl font-light leading-none tracking-[-0.03em] sm:text-[56px]">{unit}</span>
+                <span className="font-serif text-[40px] italic leading-none text-accent sm:text-[64px]">focused</span>
+              </span>
+            </h1>
+            <p className="mt-7 text-xl text-fg-secondary sm:text-[22px]">
+              of {value(total)} {inSeconds ? 'seconds' : 'minutes'} · <span className="text-fg">{pct}%</span>
+              {notTracked > 0 && ' of tracked time'}
+            </p>
+          </div>
+          <div className="flex flex-wrap self-start rounded-[18px] border border-border bg-surface lg:self-auto [&>*+*]:border-l [&>*+*]:border-border">
+            <Stat label="Longest stretch" value={value(longest)} unit={unit} />
+            <Stat label="Distracted" value={value(distracted)} unit={unit} />
+            {notTracked > 0 && (
+              <Stat label="Not tracked" value={inSeconds ? notTracked : Math.max(1, Math.round(notTracked / 60))} unit={unit} />
+            )}
+          </div>
+        </div>
+        <div className="mt-16">
           <Timeline segments={summary.segments} total={total} />
         </div>
-      </>
+        <div className="mt-11 flex flex-wrap items-center gap-3">
+          {again}
+          <Link to="/" className="rounded-md px-5 py-4 text-[15px] text-fg-secondary transition-colors hover:text-fg">
+            Back to home
+          </Link>
+        </div>
+      </div>
     );
   }
 
   return (
-    <PageShell wide>
-      <div className="mt-8">{body}</div>
-      <Button className="mt-10" onClick={() => navigate('/setup')}>Start another session</Button>
+    <PageShell>
+      <div className={`flex flex-1 flex-col ${GUTTER}`}>{body}</div>
     </PageShell>
   );
 };

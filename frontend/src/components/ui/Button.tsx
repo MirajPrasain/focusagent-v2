@@ -1,24 +1,27 @@
 import type { ButtonHTMLAttributes } from 'react';
 
 type Variant = 'primary' | 'secondary' | 'text';
-type Size = 'sm' | 'md';
+type Size = 'sm' | 'md' | 'lg';
 
 const VARIANTS: Record<Variant, string> = {
-  primary: 'bg-accent font-medium text-white hover:bg-accent/90',
+  primary: 'bg-fg font-medium text-page hover:bg-white',
   // Also a choice or toggle: aria-pressed shows it as selected
-  secondary: 'border border-border bg-surface text-fg hover:bg-border aria-pressed:border-accent aria-pressed:bg-accent/15',
+  secondary: 'border border-border text-fg-secondary hover:border-border-strong hover:text-fg '
+    + 'aria-pressed:border-accent aria-pressed:bg-accent/10 aria-pressed:text-fg',
   // Also a toggle: aria-pressed shows it as on
-  text: 'text-fg-secondary underline-offset-4 hover:text-fg hover:underline aria-pressed:text-fg aria-pressed:underline',
+  text: 'text-fg-secondary underline-offset-4 hover:text-fg hover:underline aria-pressed:text-fg',
 };
 
 // The text variant has no box, so its sizes only set the font size
 const SIZES: Record<Size, string> = {
-  sm: 'rounded-md px-3 py-1 text-sm',
-  md: 'rounded-lg px-6 py-3',
+  sm: 'h-9 rounded-lg px-3 text-sm',
+  md: 'h-11 rounded-[10px] px-4 text-sm',
+  lg: 'h-14 rounded-xl px-6 text-base',
 };
 const TEXT_SIZES: Record<Size, string> = {
   sm: 'text-xs',
   md: 'text-sm',
+  lg: 'text-base',
 };
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -31,7 +34,7 @@ export default function Button({ variant = 'primary', size = 'md', type = 'butto
   return (
     <button
       type={type}
-      className={`${VARIANTS[variant]} ${sizing} transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+      className={`inline-flex items-center justify-center gap-2 ${VARIANTS[variant]} ${sizing} transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 ${className}`}
       {...props}
     />
   );

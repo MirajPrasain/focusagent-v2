@@ -1,13 +1,19 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { X } from 'lucide-react';
+import { Bell, Eye, EyeOff, PictureInPicture2, X } from 'lucide-react';
 import { detectFaces, faceModelFailed } from '../lib/faceLandmarker'
 import { openPipWindow, pipSupported } from '../lib/pip'
 import { speak, speakAndWait, sleep } from '../lib/speech'
 import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
+import Eyebrow from '../components/ui/Eyebrow'
+import { LogoMark } from '../components/ui/Logo'
+import { GUTTER } from '../components/ui/PageShell'
+import SegmentBar from '../components/ui/SegmentBar'
 import StatusDot, { type DotState } from '../components/ui/StatusDot'
+import StatusPill from '../components/ui/StatusPill'
+import Switch from '../components/ui/Switch'
 
 // Set to true to re-enable websocket/TTS/session console logs
 const DEBUG_LOGS = false;
@@ -105,7 +111,7 @@ function ScanDot({ moving }: { moving: boolean }) {
   const { x, y } = borderPoint(moving ? t : 0);
   return (
     <div
-      className="absolute w-6 h-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent"
+      className="absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent shadow-[0_0_0_10px_rgba(138,180,255,0.14),0_0_48px_rgba(138,180,255,0.55)]"
       style={{ left: `${x}%`, top: `${y}%` }}
     />
   );
@@ -146,9 +152,9 @@ const DEFAULT_MAIN_RANGE: GazeRange = [-15, 15];
 const HIDE_CAMERA_KEY = 'focusagent.hideCamera';
 
 // The pop-out window is a compact widget that opens at this size (CSS pixels), which is its content's height: 14px
-// padding, the 32px row, a 10px gap, the 16px strip row, 14px padding. Showing the camera grows it by the
+// padding, the 36px row, a 10px gap, the 16px strip row, 14px padding. Showing the camera grows it by the
 // thumbnail's width plus the gap next to it
-const PIP_SIZE = { width: 320, height: 86 };
+const PIP_SIZE = { width: 320, height: 90 };
 const PIP_THUMB_WIDTH = 64;
 const PIP_THUMB_GAP = 12;
 
@@ -192,36 +198,27 @@ type StripRun = { state: 'focused' | 'distracted'; start: number; end: number };
 
 // The last STRIP_WINDOW_MS of the session, starting at `from` (the strip fills from the left for the first
 // STRIP_WINDOW_MS). Time without a face or without scores is left empty
-// compact: just the thin bar, growing to fill its row (the pop-out window), without the label and legend
+// compact: just the thin bar, growing to fill its row (the pop-out window), without the card, label and legend
 function FocusStrip({ runs, from, compact = false }: { runs: StripRun[]; from: number; compact?: boolean }) {
   const at = (t: number) => Math.min(Math.max((t - from) / STRIP_WINDOW_MS, 0), 1) * 100;
-  const bar = (
-    <div className={`relative overflow-hidden rounded-full bg-border ${compact ? 'h-1.5 min-w-0 flex-1' : 'h-2'}`}>
-      {runs.map((run) => (
-        <div
-          key={run.start}
-          className={`absolute inset-y-0 ${run.state === 'focused' ? 'bg-accent' : 'bg-distracted'}`}
-          style={{ left: `${at(run.start)}%`, width: `${at(run.end) - at(run.start)}%` }}
-        />
-      ))}
-    </div>
-  );
-  if (compact) return bar;
+  const segments = runs.map((run) => ({
+    key: run.start, left: at(run.start), width: at(run.end) - at(run.start), tone: run.state,
+  }));
+  if (compact) return <SegmentBar segments={segments} className="h-2 min-w-0 flex-1 rounded-full" />;
+  const shown = segments.reduce((sum, seg) => sum + seg.width, 0);
+  const focused = segments.reduce((sum, seg) => sum + (seg.tone === 'focused' ? seg.width : 0), 0);
   return (
-    <div>
-      {bar}
-      <div className="mt-1.5 flex items-center gap-3 text-[11px] text-fg-secondary">
-        <span>Last 5 minutes</span>
-        <span className="ml-auto inline-flex items-center gap-1">
-          <StatusDot state="focused" size="sm" />
-          Focused
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <StatusDot state="distracted" size="sm" />
-          Distracted
-        </span>
+    <Card>
+      <div className="flex justify-between">
+        <Eyebrow>Last 5 minutes</Eyebrow>
+        {shown > 0 && <Eyebrow>{Math.round((focused / shown) * 100)}% focused</Eyebrow>}
       </div>
-    </div>
+      <SegmentBar segments={segments} className="mt-6 h-3 rounded-full" />
+      <div className="mt-3 flex gap-[18px] text-xs text-fg-secondary">
+        <span className="inline-flex items-center gap-1.5"><StatusDot state="focused" size="sm" />Focused</span>
+        <span className="inline-flex items-center gap-1.5"><StatusDot state="distracted" size="sm" />Distracted</span>
+      </div>
+    </Card>
   );
 }
 
@@ -231,36 +228,45 @@ function FocusStrip({ runs, from, compact = false }: { runs: StripRun[]; from: n
 function GazeMeter({ gaze, main, second }: { gaze: number | null; main: GazeRange; second: GazeRange | null }) {
   const extent = Math.max(30, ...[...main, ...(second ?? [])].map(Math.abs)) + 10;
   const at = (deg: number) => Math.min(Math.max((extent - deg) / (2 * extent), 0), 1) * 100;
-  const ranges = [{ label: 'Main', range: main }, ...(second ? [{ label: 'Second', range: second }] : [])];
+  const ranges = [
+    { label: 'Main', range: main, fill: 'bg-accent/30' },
+    ...(second ? [{ label: 'Second', range: second, fill: 'bg-accent/15' }] : []),
+  ];
   return (
-    <div className="w-full" role="img" aria-label="Where you're looking, against your screens">
-      <div className="relative h-3 rounded-full bg-border">
-        {ranges.map(({ label, range: [low, high] }) => (
-          <div
-            key={label}
-            className="absolute inset-y-0 rounded-sm bg-accent/35"
-            style={{ left: `${at(high)}%`, width: `${at(low) - at(high)}%` }}
-          />
-        ))}
-        {gaze !== null && (
-          <div
-            className="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-fg ring-2 ring-page transition-[left] duration-150"
-            style={{ left: `${at(gaze)}%` }}
-          />
-        )}
+    <Card>
+      <div className="flex justify-between">
+        <Eyebrow>Where you’re looking</Eyebrow>
+        <Eyebrow>{second ? '2 screens' : '1 screen'}</Eyebrow>
       </div>
-      <div className="relative mt-1 h-4 text-[11px] text-fg-secondary">
-        {ranges.map(({ label, range: [low, high] }) => (
-          <span
-            key={label}
-            className="absolute -translate-x-1/2 whitespace-nowrap"
-            style={{ left: `${Math.min(Math.max((at(low) + at(high)) / 2, 8), 92)}%` }}
-          >
-            {label}
-          </span>
-        ))}
+      <div role="img" aria-label="Where you're looking, against your screens" className="mt-6">
+        <div className="relative h-3 rounded-full bg-border">
+          {ranges.map(({ label, range: [low, high], fill }) => (
+            <div
+              key={label}
+              className={`absolute inset-y-0 rounded ${fill}`}
+              style={{ left: `${at(high)}%`, width: `${at(low) - at(high)}%` }}
+            />
+          ))}
+          {gaze !== null && (
+            <div
+              className="absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-fg ring-[3px] ring-page transition-[left] duration-150"
+              style={{ left: `${at(gaze)}%` }}
+            />
+          )}
+        </div>
+        <div className="relative mt-2.5 h-4 text-xs text-fg-secondary">
+          {ranges.map(({ label, range: [low, high] }) => (
+            <span
+              key={label}
+              className="absolute -translate-x-1/2 whitespace-nowrap"
+              style={{ left: `${Math.min(Math.max((at(low) + at(high)) / 2, 8), 92)}%` }}
+            >
+              {label}
+            </span>
+          ))}
+        </div>
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -865,120 +871,179 @@ const handleEndSession = () => {
   const reason = focusState === 'distracted' && !connectionLost
     ? [...cheatEvents].sort((a, b) => a - b).map((code) => DISTRACTION_REASONS[code]).filter(Boolean).join(', ')
     : '';
+  const elapsedShare = Math.min(elapsedTime / (duration * 60), 1) * 100;
 
-  // Shown on the page, and (except statusBlock's reason line) in the pop-out window while it's open
+  // The pop-out window's status: dot and label only
   const statusLabel = (
-    <div role="status" className="flex min-w-0 items-center gap-2 text-base font-medium">
-      <StatusDot state={status.dot} />
+    <div role="status" className="flex min-w-0 items-center gap-2.5 text-base font-medium">
+      <StatusDot state={status.dot} glow />
       <span className="truncate">{status.label}</span>
     </div>
   );
-  const statusBlock = (
-    <div className="min-w-0">
-      {statusLabel}
-      <div className="min-h-4 pl-[18px] text-xs text-fg-secondary">{reason}</div>
-    </div>
-  );
-  const endControls = confirmingEnd ? (
-    <div className="flex shrink-0 items-center gap-1 text-sm">
+  // compact: the pop-out window's End
+  const endControls = (compact: boolean) => confirmingEnd ? (
+    <div className="flex shrink-0 items-center gap-1">
       <Button size="sm" onClick={handleEndSession}>End now?</Button>
-      <Button variant="text" size="md" className="px-2 py-1" onClick={() => setConfirmingEnd(false)}>
+      <Button variant="text" size="md" className="px-2" onClick={() => setConfirmingEnd(false)}>
         Keep going
       </Button>
     </div>
   ) : (
-    <Button variant="secondary" size="sm" className="shrink-0" onClick={() => setConfirmingEnd(true)}>
-      End
-    </Button>
-  );
-  const hideCameraToggle = (
-    <Button variant="text" size="sm" aria-pressed={hideCamera} onClick={toggleCamera}>
-      Hide camera
+    <Button
+      variant={compact ? 'secondary' : 'primary'}
+      size={compact ? 'sm' : 'md'}
+      className={`shrink-0 ${compact ? 'bg-surface-raised' : ''}`}
+      onClick={() => setConfirmingEnd(true)}
+    >
+      {compact ? 'End' : 'End session'}
     </Button>
   );
 
   return (
-    <div className="min-h-screen bg-page text-fg">
-      <div className="mx-auto flex min-h-screen w-full max-w-sm flex-col gap-6 px-4 py-4">
-        <header className="flex items-start justify-between gap-3">
-          {statusBlock}
-          {endControls}
-        </header>
+    <div className="relative flex min-h-screen flex-col overflow-hidden bg-page text-fg">
+      {/* The ambient glow in the status color, one layer per state so a change crossfades */}
+      <div aria-hidden="true" className="pointer-events-none absolute inset-0">
+        {([
+          ['focused', 'rgba(138,180,255,0.13)'],
+          ['distracted', 'rgba(255,138,91,0.13)'],
+          ['away', 'rgba(139,144,156,0.07)'],
+        ] as const).map(([state, color]) => (
+          <div
+            key={state}
+            className={`absolute left-1/2 top-[-10%] h-[110vh] w-[110vh] -translate-x-1/2 rounded-full transition-opacity duration-700 ${
+              status.dot === state && !pipWindow ? 'opacity-100' : 'opacity-0'}`}
+            style={{ background: `radial-gradient(circle, ${color} 0%, rgba(8,9,12,0) 62%)` }}
+          />
+        ))}
+      </div>
 
-        {connectionLost && (
-          <Card padding="sm" className="text-sm">
-            <div className="font-medium">Connection lost</div>
-            <div className="mt-0.5 text-fg-secondary">Focus tracking has stopped for this session.</div>
-            <Button size="sm" className="mt-3" onClick={handleEndSession}>See summary</Button>
-          </Card>
-        )}
+      <header className={`relative flex flex-wrap items-center justify-between gap-x-6 gap-y-3 py-6 ${GUTTER}`}>
+        <div className="flex items-center gap-3.5">
+          <LogoMark />
+          <span className="text-[17px] font-semibold tracking-tight">FocusAgent</span>
+          <span aria-hidden="true" className="h-[18px] w-px bg-border-strong" />
+          <Eyebrow className="text-xs">{duration} min session</Eyebrow>
+        </div>
+        <div className="flex flex-wrap items-center gap-2.5">
+          {pipSupported() && !pipWindow && (
+            <Button variant="secondary" onClick={popOut}>
+              <PictureInPicture2 className="h-4 w-4" aria-hidden="true" />
+              Pop out
+            </Button>
+          )}
+          <Button variant="secondary" role="switch" aria-checked={chimeOn} onClick={toggleChime}>
+            <Bell className="h-4 w-4" aria-hidden="true" />
+            Chime
+            <Switch on={chimeOn} />
+          </Button>
+          {!pipWindow && (
+            <Button variant="secondary" onClick={toggleCamera}>
+              {hideCamera
+                ? <Eye className="h-4 w-4" aria-hidden="true" />
+                : <EyeOff className="h-4 w-4" aria-hidden="true" />}
+              {hideCamera ? 'Show camera' : 'Hide camera'}
+            </Button>
+          )}
+          {endControls(false)}
+        </div>
+      </header>
 
-        {showHiddenNote && !connectionLost && (
-          <Card padding="sm" className="flex items-start gap-3 text-sm text-fg-secondary">
-            <p className="flex-1">
-              {pipSupported()
-                ? 'Tracking paused while this window was hidden. Pop out keeps tracking while you work in other windows.'
-                : 'Tracking paused while this window was hidden. Keep it visible beside your work.'}
-            </p>
-            <button
-              onClick={() => setShowHiddenNote(false)}
-              aria-label="Dismiss"
-              className="-m-1 p-1 text-fg-secondary hover:text-fg transition-colors"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </Card>
-        )}
-
-        {pipWindow ? (
-          <Card padding="sm" className="text-sm">
-            <div className="font-medium">Popped out</div>
-            <div className="mt-0.5 text-fg-secondary">
-              The session is in the small window, and tracking keeps running while you work in other windows.
+      {(connectionLost || (showHiddenNote && !connectionLost)) && (
+        <div className={`relative flex justify-center ${GUTTER}`}>
+          {connectionLost ? (
+            <div className="flex w-full max-w-xl animate-fade-up flex-wrap items-center gap-x-4 gap-y-3 rounded-2xl border border-distracted/40 bg-distracted/10 px-5 py-4 text-sm">
+              <div className="flex-1">
+                <div className="font-medium">Connection lost</div>
+                <div className="mt-0.5 text-fg-secondary">Focus tracking has stopped for this session.</div>
+              </div>
+              <Button size="sm" onClick={handleEndSession}>See summary</Button>
             </div>
-            <Button variant="secondary" size="sm" className="mt-3" onClick={() => pipWindow.close()}>
+          ) : (
+            <div className="flex w-full max-w-xl animate-fade-up items-start gap-3 rounded-2xl border border-border-strong bg-surface-raised px-5 py-4 text-sm text-fg-secondary">
+              <p className="flex-1">
+                {pipSupported()
+                  ? 'Tracking paused while this window was hidden. Pop out keeps tracking while you work in other windows.'
+                  : 'Tracking paused while this window was hidden. Keep it visible beside your work.'}
+              </p>
+              <button
+                onClick={() => setShowHiddenNote(false)}
+                aria-label="Dismiss"
+                className="-m-1.5 rounded-md p-1.5 text-fg-secondary transition-colors hover:text-fg"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      <main className={`relative flex flex-1 flex-col justify-center py-10 ${GUTTER}`}>
+        {pipWindow ? (
+          <div className="mx-auto flex max-w-md animate-fade-up flex-col items-center text-center">
+            <Eyebrow tone="accent">Popped out</Eyebrow>
+            <p className="mt-4 text-2xl font-medium tracking-tight">The session is in the small window.</p>
+            <p className="mt-2 text-fg-secondary">Tracking keeps running while you work in other windows.</p>
+            <Button variant="secondary" className="mt-8" onClick={() => pipWindow.close()}>
               Bring back
             </Button>
-          </Card>
+          </div>
         ) : (
-          <>
-            <div className="text-center">
-              <div className="text-6xl font-light tabular-nums tracking-tight">{formatClock(remaining)}</div>
-              <div className="mt-1 text-sm tabular-nums text-fg-secondary">of {formatClock(duration * 60)}</div>
-            </div>
-
-            <FocusStrip runs={strip.runs} from={strip.from} />
-
+          <div
+            className={`flex flex-col items-center ${hideCamera ? '' : 'gap-10 lg:flex-row lg:justify-center lg:gap-[72px]'}`}
+          >
+            {/* Hidden: shrunk out of sight rather than removed, since face tracking reads the video */}
             <section
               aria-hidden={hideCamera || undefined}
-              className={hideCamera ? HIDDEN_CAMERA_CLASS : 'flex flex-col items-center gap-3'}
+              className={hideCamera ? HIDDEN_CAMERA_CLASS
+                : `relative aspect-[4/3] w-full max-w-[640px] overflow-hidden rounded-3xl border bg-surface transition-colors duration-500 ${
+                  status.dot === 'focused' ? 'border-accent/40'
+                    : status.dot === 'distracted' ? 'border-distracted/40' : 'border-border'}`}
             >
-              <CameraSlot video={video} className="aspect-[4/3] w-44 overflow-hidden rounded-xl" />
-              {!hideCamera && <GazeMeter gaze={gaze} main={screenRanges.main} second={screenRanges.second} />}
+              <CameraSlot video={video} className="h-full w-full" />
+              {!hideCamera && (
+                <div className="pointer-events-none absolute inset-x-[18px] bottom-4 flex justify-between font-mono text-[11px] uppercase tracking-[0.12em] text-fg-secondary">
+                  <span>Mirrored</span>
+                  <span>Not recorded</span>
+                </div>
+              )}
             </section>
-          </>
-        )}
 
-        <footer className="mt-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs text-fg-secondary">
-          <span>Video never leaves this device</span>
-          <div className="flex gap-4">
-            {pipSupported() && !pipWindow && (
-              <Button variant="text" size="sm" onClick={popOut}>
-                Pop out
-              </Button>
-            )}
-            {hideCameraToggle}
-            <Button variant="text" size="sm" aria-pressed={chimeOn} onClick={toggleChime}>
-              Chime <span aria-hidden="true">{chimeOn ? 'on' : 'off'}</span>
-            </Button>
+            <div className={`flex w-full flex-col items-center ${hideCamera ? 'max-w-[560px]' : 'max-w-[440px] lg:items-start'}`}>
+              <div role="status">
+                <StatusPill state={status.dot} label={status.label} detail={reason || undefined} />
+              </div>
+              <div
+                className={`mt-7 font-extralight leading-[0.9] tabular-nums ${hideCamera
+                  ? 'text-[clamp(96px,17vw,248px)] tracking-[-0.06em]'
+                  : 'text-[clamp(72px,8.5vw,120px)] tracking-[-0.055em]'}`}
+              >
+                {formatClock(remaining)}
+              </div>
+              <div className={`w-full ${hideCamera ? 'mt-9' : 'mt-7'}`}>
+                <div className="h-0.5 rounded-full bg-border">
+                  <div className="h-full rounded-full bg-fg transition-[width] duration-1000 ease-linear" style={{ width: `${elapsedShare}%` }} />
+                </div>
+                <div className="mt-3 flex justify-between font-mono text-xs uppercase tracking-[0.08em] text-fg-muted tabular-nums">
+                  <span>{formatClock(elapsedTime)} elapsed</span>
+                  <span>of {formatClock(duration * 60)}</span>
+                </div>
+              </div>
+            </div>
           </div>
-        </footer>
-      </div>
+        )}
+      </main>
+
+      {!pipWindow && (
+        <section className={`relative grid gap-4 pb-9 md:grid-cols-2 ${GUTTER}`}>
+          <GazeMeter gaze={gaze} main={screenRanges.main} second={screenRanges.second} />
+          <FocusStrip runs={strip.runs} from={strip.from} />
+        </section>
+      )}
 
       {/* The pop-out window: a compact widget. One row (status, countdown, End) over the thin strip, with the
           camera thumbnail at the left when shown. The content fills the window (see the fit effect above) */}
       {pipWindow && createPortal(
-        <div className="flex h-screen items-center">
+        <div className="flex h-screen items-center bg-page text-fg">
           <div ref={pipContentRef} className="flex w-full items-center gap-3 p-3.5">
             <CameraSlot
               video={video}
@@ -987,19 +1052,19 @@ const handleEndSession = () => {
                 : HIDDEN_CAMERA_CLASS}
             />
             <div className="flex min-w-0 flex-1 flex-col gap-2.5">
-              <div className="flex min-h-8 items-center gap-3">
+              <div className="flex h-9 items-center gap-3">
                 {statusLabel}
                 <div className="ml-auto flex shrink-0 items-center gap-3">
                   {/* Room for the End confirmation */}
                   {!confirmingEnd && (
-                    <span className="text-2xl font-light leading-8 tabular-nums tracking-tight">
+                    <span className="text-[28px] font-light leading-9 tracking-[-0.03em] tabular-nums">
                       {formatClock(remaining)}
                     </span>
                   )}
-                  {endControls}
+                  {endControls(true)}
                 </div>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex h-4 items-center gap-3">
                 <FocusStrip runs={strip.runs} from={strip.from} compact />
                 <Button
                   variant="text"
@@ -1019,12 +1084,17 @@ const handleEndSession = () => {
 
       {/* Calibration overlay: covers the session until calibration is done or skipped */}
       {calibrationStatus !== 'done' && (
-        <div className="fixed inset-0 z-[60] bg-page/95 backdrop-blur-sm">
-          {calibrationView.dot !== 'none' && <ScanDot moving={calibrationView.dot === 'moving'} />}
+        <div className="fixed inset-0 z-[60] bg-[#050608]">
+          {calibrationView.dot !== 'none' && (
+            <>
+              <div aria-hidden="true" className="absolute inset-x-[3%] inset-y-[3%] border border-dashed border-border" />
+              <ScanDot moving={calibrationView.dot === 'moving'} />
+            </>
+          )}
 
-          <div className="absolute inset-x-0 top-1/4 px-6 text-center">
-            <div className="text-sm text-accent font-medium mb-2">Screen calibration</div>
-            <div className="text-2xl text-fg font-semibold">
+          <div className="absolute inset-0 flex flex-col items-center justify-center overflow-y-auto px-6 py-24 text-center">
+            <Eyebrow tone="accent">Screen calibration</Eyebrow>
+            <h1 className="mt-5 max-w-3xl text-balance text-3xl font-medium leading-tight tracking-[-0.035em] sm:text-5xl">
               {calibrationStatus === 'waiting'
                 ? (cameraError || modelError
                   ? "Face tracking isn't available"
@@ -1032,79 +1102,84 @@ const handleEndSession = () => {
                 : calibrationStatus === 'failed'
                   ? calibrationFailure && CALIBRATION_FAILURE_MESSAGES[calibrationFailure]
                   : calibrationView.prompt}
-            </div>
+            </h1>
             {!socketOpen && !backendLost && (
-              <div role="status" className="mt-2 text-fg-secondary">
+              <div role="status" className="mt-4 text-fg-secondary">
                 <div>Connecting to server…</div>
                 {connectSlow && <div>The server may be waking up, this can take up to a minute.</div>}
               </div>
             )}
             {calibrationStatus === 'waiting' && (
               <>
-                <div className="mt-2 text-fg-secondary">
+                <p className="mt-4 text-lg text-fg-secondary">
                   The page goes full screen while you follow a dot with your eyes.
-                </div>
-                <Button onClick={startCalibration} disabled={!faceSeen || !socketOpen} className="mt-8">
+                </p>
+                <Button size="lg" onClick={startCalibration} disabled={!faceSeen || !socketOpen} className="mt-10">
                   Start calibration
                 </Button>
               </>
             )}
             {calibrationStatus === 'failed' && (
-              <div className="mt-2 text-fg-secondary">
+              <p className="mt-4 text-lg text-fg-secondary">
                 Redo the calibration, or skip to start the session with a default screen range.
-              </div>
+              </p>
             )}
             {(cameraError || modelError || backendLost) && (
-              <div className="mt-6 mx-auto max-w-md space-y-2 text-sm text-fg">
+              <div className="mt-8 w-full max-w-md space-y-2 text-left text-sm text-fg">
                 {cameraError && (
-                  <div className="bg-distracted/10 border border-distracted/50 rounded-xl px-4 py-3">
+                  <div className="rounded-2xl border border-distracted/40 bg-distracted/10 px-5 py-4">
                     The camera isn't available. Allow camera access for this site, then reload the page.
                   </div>
                 )}
                 {modelError && (
-                  <div className="bg-distracted/10 border border-distracted/50 rounded-xl px-4 py-3">
+                  <div className="rounded-2xl border border-distracted/40 bg-distracted/10 px-5 py-4">
                     The face tracking model didn't load. Check your internet connection, then reload the page.
                   </div>
                 )}
                 {backendLost && (
-                  <div className="bg-distracted/10 border border-distracted/50 rounded-xl px-4 py-3">
+                  <div className="rounded-2xl border border-distracted/40 bg-distracted/10 px-5 py-4">
                     Can't reach the FocusAgent server, so this session can't be tracked. Reload the page to try again.
                   </div>
                 )}
               </div>
             )}
             {calibrationView.countdown !== null && (
-              <div className="mt-6 text-6xl text-accent font-bold">{calibrationView.countdown}</div>
+              <div
+                aria-live="polite"
+                className="mt-9 text-[clamp(120px,18vw,220px)] font-extralight leading-none tracking-[-0.06em] text-accent tabular-nums"
+              >
+                {calibrationView.countdown}
+              </div>
             )}
             {calibrationView.recording && (
-              <div className="mt-6 inline-flex items-center space-x-2 text-distracted text-sm font-medium">
-                <span className="w-2 h-2 bg-distracted rounded-full animate-pulse"></span>
-                <span>Recording</span>
+              <div className="mt-9 inline-flex items-center gap-2 font-mono text-xs uppercase tracking-[0.14em] text-distracted">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-distracted" />
+                Recording
+              </div>
+            )}
+            {calibrationView.asking && (
+              <div className="mt-10 flex gap-3">
+                <Button size="lg" className="min-w-28" onClick={() => answerSecondScreen(true)}>Yes</Button>
+                <Button size="lg" variant="secondary" className="min-w-28" onClick={() => answerSecondScreen(false)}>
+                  No
+                </Button>
               </div>
             )}
           </div>
 
-          {calibrationView.asking && (
-            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center gap-4 px-6">
-              <Button onClick={() => answerSecondScreen(true)}>
-                Yes
-              </Button>
-              <Button variant="secondary" onClick={() => answerSecondScreen(false)}>
-                No
-              </Button>
-            </div>
-          )}
-
-          <div className="absolute bottom-8 inset-x-0 flex justify-center gap-6">
+          <div className="absolute inset-x-0 bottom-12 flex justify-center gap-6">
             {calibrationStatus !== 'waiting' && (
-              <Button variant={calibrationStatus === 'failed' ? 'primary' : 'text'} onClick={startCalibration}
-                disabled={!socketOpen}>
+              <Button
+                variant={calibrationStatus === 'failed' ? 'primary' : 'text'}
+                onClick={startCalibration}
+                disabled={!socketOpen}
+              >
                 Redo calibration
               </Button>
             )}
             {calibrationStatus !== 'checking' && (
               <Button variant="text" onClick={skipCalibration} disabled={!socketOpen}>
-                Skip
+                Skip calibration
               </Button>
             )}
           </div>
