@@ -337,6 +337,9 @@ function Session() {
   const [chimeOn, setChimeOn] = useState(false);
   const [confirmingEnd, setConfirmingEnd] = useState(false);
   const [showHiddenNote, setShowHiddenNote] = useState(false);
+  // The Pop out hint shows by itself once, when the session starts, until dismissed or Pop out is clicked; after
+  // that only while the button is hovered or focused
+  const [popHintDismissed, setPopHintDismissed] = useState(false);
 
   const [faceSeen, setFaceSeen] = useState(false);
   const faceSeenRef = useRef(false);
@@ -926,10 +929,48 @@ const handleEndSession = () => {
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
           {pipSupported() && !pipWindow && (
-            <Button variant="secondary" onClick={popOut}>
-              <PictureInPicture2 className="h-4 w-4" aria-hidden="true" />
-              Pop out
-            </Button>
+            <div className="group relative">
+              <Button
+                variant="secondary"
+                className="relative ring-1 ring-accent/40"
+                aria-describedby="pop-out-hint"
+                onClick={() => {
+                  setPopHintDismissed(true);
+                  popOut();
+                }}
+              >
+                <PictureInPicture2 className="h-4 w-4" aria-hidden="true" />
+                Pop out
+                {/* Badge: pulses until the hint is dismissed, then stays as a plain dot */}
+                <span aria-hidden="true" className="absolute -right-1 -top-1 flex h-2.5 w-2.5">
+                  {!popHintDismissed && (
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-75" />
+                  )}
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-accent ring-2 ring-page" />
+                </span>
+              </Button>
+              <div
+                id="pop-out-hint"
+                role="note"
+                className={`absolute left-0 top-full z-20 mt-3 w-60 rounded-xl border border-border-strong bg-surface-raised py-3 pl-4 pr-3 text-sm text-fg shadow-[0_12px_32px_rgba(0,0,0,0.5)] transition-opacity duration-200 ${
+                  sessionStarted && !popHintDismissed ? 'opacity-100'
+                    : 'pointer-events-none opacity-0 group-focus-within:opacity-100 group-hover:opacity-100'}`}
+              >
+                <span aria-hidden="true" className="absolute -top-1.5 left-6 h-3 w-3 rotate-45 border-l border-t border-border-strong bg-surface-raised" />
+                <div className="relative flex items-start gap-2">
+                  <p className="flex-1">Switching tabs or apps? Pop this out first</p>
+                  {sessionStarted && !popHintDismissed && (
+                    <button
+                      onClick={() => setPopHintDismissed(true)}
+                      aria-label="Dismiss hint"
+                      className="-m-1 rounded-md p-1 text-fg-secondary transition-colors hover:text-fg"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
           )}
           <Button variant="secondary" role="switch" aria-checked={chimeOn} onClick={toggleChime}>
             <Bell className="h-4 w-4" aria-hidden="true" />
