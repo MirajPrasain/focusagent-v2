@@ -1,7 +1,9 @@
 import { useRef, useState, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { X } from 'lucide-react';
 import { detectFaces, faceModelFailed } from '../lib/faceLandmarker'
+import { openPipWindow, pipSupported } from '../lib/pip'
 import { speak, speakAndWait, sleep } from '../lib/speech'
 import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
@@ -137,6 +139,33 @@ const DEFAULT_MAIN_RANGE: GazeRange = [-15, 15];
 
 const HIDE_CAMERA_KEY = 'focusagent.hideCamera';
 
+// The pop-out window's starting size in CSS pixels; the user can resize it
+const PIP_SIZE = { width: 300, height: 340 };
+// Hide camera shrinks the preview out of sight instead of removing it: face tracking reads the video
+const HIDDEN_CAMERA_CLASS = 'pointer-events-none fixed left-0 top-0 h-px w-px overflow-hidden opacity-0';
+
+// The camera preview is one <video> made outside React, so it can move between the page and the pop-out window (an
+// element React rendered can't change documents). Face tracking reads it wherever it is
+function createCameraVideo() {
+  const video = document.createElement('video');
+  video.autoplay = true;
+  video.muted = true;
+  video.playsInline = true;
+  video.setAttribute('aria-label', 'Your camera preview');
+  video.className = 'h-full w-full -scale-x-100 bg-black object-cover';
+  return video;
+}
+
+// Where the camera preview shows: moves the shared video into this box when it mounts
+function CameraSlot({ video, className }: { video: HTMLVideoElement; className: string }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    boxRef.current?.appendChild(video);
+    video.play().catch(() => {}); // moving a video to another document can pause it
+  }, [video]);
+  return <div ref={boxRef} className={className} />;
+}
+
 // mm:ss
 function formatClock(totalSeconds: number) {
   const mins = Math.floor(totalSeconds / 60);
@@ -234,8 +263,17 @@ function Session() {
   const [searchParams] = useSearchParams();
   const duration = parseInt(searchParams.get("duration") || "25");
 
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const [video] = useState(createCameraVideo);
   const socketRef = useRef<WebSocket | null>(null);
+
+  // The pop-out window while it's open. Chrome throttles a hidden tab's timers to once a second, which would cut
+  // face tracking from 5 landmark messages a second to 1, but not while the tab has a pop-out window open (measured:
+  // 5/s with the tab minimized or behind another tab). So the loops below stay on this page's timers either way
+  const [pipWindow, setPipWindow] = useState<Window | null>(null);
+  const pipWindowRef = useRef<Window | null>(null);
+  pipWindowRef.current = pipWindow;
+  // Set when the tab is hidden without the pop-out window open (tracking lapses), for the note shown on return
+  const hiddenUntrackedRef = useRef(false);
 
   const [elapsedTime, setElapsedTime] = useState(0);
   const sessionStartTime = useRef(Date.now());
@@ -302,9 +340,7 @@ function Session() {
           return;
         }
         stream = s;
-        if (videoRef.current) {
-          videoRef.current.srcObject = s;
-        }
+        video.srcObject = s;
       })
       .catch((err) => {
         console.error("Camera access error:", err);
@@ -314,7 +350,7 @@ function Session() {
       unmounted = true;
       stream?.getTracks().forEach((t) => t.stop());
     };
-  }, []);
+  }, [video]);
 
   // Browser-side MediaPipe: every 200ms, detect the face and send a landmark message on the study websocket.
   // The backend (backend/cv_project/landmark_pipeline.py) scores it and replies with {score, cheat_events, distracted}.
@@ -333,9 +369,8 @@ function Session() {
     let lastTimestamp = -1;
 
     const interval = setInterval(async () => {
-      const video = videoRef.current;
-      //if busy, no video , video not ready, video not loaded(width = 0 ) - > dont do anything
-      if (busy || !video || video.readyState < 2 || video.videoWidth === 0) return;
+      //if busy, video not ready, video not loaded(width = 0 ) - > dont do anything
+      if (busy || video.readyState < 2 || video.videoWidth === 0) return;
 
       const timestamp = performance.now();
       // 100, 200, 300. timestamp should be increasing, if it less than last, dont do anything 
@@ -410,7 +445,7 @@ function Session() {
     }, 200);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [video]);
 
   // Session timer: starts once calibration is finished or skipped
   useEffect(() => {
@@ -453,11 +488,16 @@ function Session() {
     return () => clearInterval(timer);
   }, [sessionStarted]);
 
-  // Back from a hidden tab or minimized window: detection was throttled meanwhile, so say so, and restart the
-  // label and chime timers since the score wasn't followed while hidden
+  // Back from a hidden tab or minimized window. Without the pop-out window, detection was throttled meanwhile, so
+  // say so, and restart the label and chime timers since the score wasn't followed while hidden
   useEffect(() => {
     const onVisibilityChange = () => {
-      if (document.visibilityState !== 'visible' || !sessionStartedRef.current) return;
+      if (document.visibilityState === 'hidden') {
+        hiddenUntrackedRef.current = pipWindowRef.current === null;
+        return;
+      }
+      if (!hiddenUntrackedRef.current || !sessionStartedRef.current) return;
+      hiddenUntrackedRef.current = false;
       belowSinceRef.current = null;
       distractedSinceRef.current = null;
       setShowHiddenNote(true);
@@ -705,12 +745,9 @@ const handleEndSession = () => {
     }
     
     // Stop webcam
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      const tracks = stream.getTracks();
-      tracks.forEach((track: MediaStreamTrack) => track.stop());
-    }
+    (video.srcObject as MediaStream | null)?.getTracks().forEach((track) => track.stop());
 
+    pipWindowRef.current?.close();
     navigate("/summary");
   };
 
@@ -740,6 +777,26 @@ const handleEndSession = () => {
     }
   };
 
+  // Pop out: the status, countdown, strip, camera and End move into a small always-on-top window, which keeps face
+  // tracking at full rate while this tab is hidden (see pipWindow). Closing it brings them back here; the session
+  // keeps going
+  const popOut = async () => {
+    try {
+      const pip = await openPipWindow(PIP_SIZE.width, PIP_SIZE.height);
+      pip.addEventListener('pagehide', () => {
+        // Closed while the tab is hidden: tracking lapses from here, as without the pop-out window
+        if (document.visibilityState === 'hidden') hiddenUntrackedRef.current = true;
+        setPipWindow(null);
+      }, { once: true });
+      setPipWindow(pip);
+    } catch (err) {
+      console.error('Pop out failed:', err);
+    }
+  };
+
+  // Leaving the page closes the pop-out window
+  useEffect(() => () => pipWindowRef.current?.close(), []);
+
   const remaining = Math.max(duration * 60 - elapsedTime, 0);
   const connectionLost = sessionStarted && backendLost;
   const status: { label: string; dot: DotState } = connectionLost ? { label: 'Not tracking', dot: 'off' }
@@ -748,29 +805,40 @@ const handleEndSession = () => {
     ? [...cheatEvents].sort((a, b) => a - b).map((code) => DISTRACTION_REASONS[code]).filter(Boolean).join(', ')
     : '';
 
+  // Shown on the page, and in the pop-out window while it's open
+  const statusBlock = (
+    <div className="min-w-0">
+      <div role="status" className="flex items-center gap-2 text-base font-medium">
+        <StatusDot state={status.dot} />
+        {status.label}
+      </div>
+      <div className="min-h-4 pl-[18px] text-xs text-fg-secondary">{reason}</div>
+    </div>
+  );
+  const endControls = confirmingEnd ? (
+    <div className="flex shrink-0 items-center gap-1 text-sm">
+      <Button size="sm" onClick={handleEndSession}>End now?</Button>
+      <Button variant="text" size="md" className="px-2 py-1" onClick={() => setConfirmingEnd(false)}>
+        Keep going
+      </Button>
+    </div>
+  ) : (
+    <Button variant="secondary" size="sm" className="shrink-0" onClick={() => setConfirmingEnd(true)}>
+      End
+    </Button>
+  );
+  const hideCameraToggle = (
+    <Button variant="text" size="sm" aria-pressed={hideCamera} onClick={toggleCamera}>
+      Hide camera
+    </Button>
+  );
+
   return (
     <div className="min-h-screen bg-page text-fg">
       <div className="mx-auto flex min-h-screen w-full max-w-sm flex-col gap-6 px-4 py-4">
         <header className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div role="status" className="flex items-center gap-2 text-base font-medium">
-              <StatusDot state={status.dot} />
-              {status.label}
-            </div>
-            <div className="min-h-4 pl-[18px] text-xs text-fg-secondary">{reason}</div>
-          </div>
-          {confirmingEnd ? (
-            <div className="flex shrink-0 items-center gap-1 text-sm">
-              <Button size="sm" onClick={handleEndSession}>End now?</Button>
-              <Button variant="text" size="md" className="px-2 py-1" onClick={() => setConfirmingEnd(false)}>
-                Keep going
-              </Button>
-            </div>
-          ) : (
-            <Button variant="secondary" size="sm" className="shrink-0" onClick={() => setConfirmingEnd(true)}>
-              End
-            </Button>
-          )}
+          {statusBlock}
+          {endControls}
         </header>
 
         {connectionLost && (
@@ -783,7 +851,11 @@ const handleEndSession = () => {
 
         {showHiddenNote && !connectionLost && (
           <Card padding="sm" className="flex items-start gap-3 text-sm text-fg-secondary">
-            <p className="flex-1">Tracking paused while this window was hidden. Keep it visible beside your work.</p>
+            <p className="flex-1">
+              {pipSupported()
+                ? 'Tracking paused while this window was hidden. Pop out keeps tracking while you work in other windows.'
+                : 'Tracking paused while this window was hidden. Keep it visible beside your work.'}
+            </p>
             <button
               onClick={() => setShowHiddenNote(false)}
               aria-label="Dismiss"
@@ -794,43 +866,70 @@ const handleEndSession = () => {
           </Card>
         )}
 
-        <div className="text-center">
-          <div className="text-6xl font-light tabular-nums tracking-tight">{formatClock(remaining)}</div>
-          <div className="mt-1 text-sm tabular-nums text-fg-secondary">of {formatClock(duration * 60)}</div>
-        </div>
+        {pipWindow ? (
+          <Card padding="sm" className="text-sm">
+            <div className="font-medium">Popped out</div>
+            <div className="mt-0.5 text-fg-secondary">
+              The session is in the small window, and tracking keeps running while you work in other windows.
+            </div>
+            <Button variant="secondary" size="sm" className="mt-3" onClick={() => pipWindow.close()}>
+              Bring back
+            </Button>
+          </Card>
+        ) : (
+          <>
+            <div className="text-center">
+              <div className="text-6xl font-light tabular-nums tracking-tight">{formatClock(remaining)}</div>
+              <div className="mt-1 text-sm tabular-nums text-fg-secondary">of {formatClock(duration * 60)}</div>
+            </div>
 
-        <FocusStrip runs={strip.runs} from={strip.from} />
+            <FocusStrip runs={strip.runs} from={strip.from} />
 
-        {/* Hide camera shrinks this out of sight instead of unmounting it: the face tracking reads the video */}
-        <section
-          aria-hidden={hideCamera || undefined}
-          className={hideCamera
-            ? 'pointer-events-none fixed left-0 top-0 h-px w-px overflow-hidden opacity-0'
-            : 'flex flex-col items-center gap-3'}
-        >
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="aspect-[4/3] w-44 -scale-x-100 rounded-xl bg-black object-cover"
-            aria-label="Your camera preview"
-          />
-          {!hideCamera && <GazeMeter gaze={gaze} main={screenRanges.main} second={screenRanges.second} />}
-        </section>
+            <section
+              aria-hidden={hideCamera || undefined}
+              className={hideCamera ? HIDDEN_CAMERA_CLASS : 'flex flex-col items-center gap-3'}
+            >
+              <CameraSlot video={video} className="aspect-[4/3] w-44 overflow-hidden rounded-xl" />
+              {!hideCamera && <GazeMeter gaze={gaze} main={screenRanges.main} second={screenRanges.second} />}
+            </section>
+          </>
+        )}
 
         <footer className="mt-auto flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs text-fg-secondary">
           <span>Video never leaves this device</span>
           <div className="flex gap-4">
-            <Button variant="text" size="sm" aria-pressed={hideCamera} onClick={toggleCamera}>
-              Hide camera
-            </Button>
+            {pipSupported() && !pipWindow && (
+              <Button variant="text" size="sm" onClick={popOut}>
+                Pop out
+              </Button>
+            )}
+            {hideCameraToggle}
             <Button variant="text" size="sm" aria-pressed={chimeOn} onClick={toggleChime}>
               Chime <span aria-hidden="true">{chimeOn ? 'on' : 'off'}</span>
             </Button>
           </div>
         </footer>
       </div>
+
+      {/* The pop-out window: same pieces, smaller */}
+      {pipWindow && createPortal(
+        <div className="flex h-screen flex-col gap-3 p-3">
+          <header className="flex items-start justify-between gap-2">
+            {statusBlock}
+            {endControls}
+          </header>
+          <div className="text-center text-4xl font-light tabular-nums tracking-tight">{formatClock(remaining)}</div>
+          <FocusStrip runs={strip.runs} from={strip.from} />
+          <div className="mt-auto flex items-end justify-between gap-3">
+            <CameraSlot
+              video={video}
+              className={hideCamera ? HIDDEN_CAMERA_CLASS : 'aspect-[4/3] w-28 overflow-hidden rounded-lg'}
+            />
+            {hideCameraToggle}
+          </div>
+        </div>,
+        pipWindow.document.body,
+      )}
 
       {/* Calibration overlay: covers the session until calibration is done or skipped */}
       {calibrationStatus !== 'done' && (

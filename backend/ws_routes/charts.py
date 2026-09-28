@@ -7,6 +7,9 @@ router = APIRouter()
 # A stretch counts as distracted only once the score has stayed below DISTRACTED_BELOW this long. Shorter dips
 # (a blink, a quick glance) count as focused
 MIN_DISTRACTED_SECONDS = 2
+# No landmark message for longer than this means the browser wasn't tracking (a hidden tab without the pop-out
+# window, a camera or connection problem): that stretch counts as not tracked
+MAX_MESSAGE_GAP_SECONDS = 2
 
 
 def distracted_intervals(timed_scores, session_seconds):
@@ -27,23 +30,47 @@ def distracted_intervals(timed_scores, session_seconds):
     return intervals
 
 
-def summarize_focus(timed_scores, session_seconds):
-    """The session summary: every whole second is distracted if its midpoint lies in a distracted interval, else
-    focused (including seconds before the first score). Returns total_seconds, focused_seconds,
-    longest_focused_seconds and the timeline as segments [{start, end, state}] (seconds, end exclusive)."""
+def untracked_intervals(message_times, session_seconds):
+    """(start, end) in seconds of every stretch longer than MAX_MESSAGE_GAP_SECONDS without a landmark message,
+    including before the first message and after the last one. message_times are in order."""
+    intervals = []
+    previous = 0
+    for arrived in [*message_times, session_seconds]:  # the sentinel catches a gap that runs to the session's end
+        if arrived - previous > MAX_MESSAGE_GAP_SECONDS:
+            intervals.append((previous, arrived))
+        previous = max(previous, arrived)
+    return intervals
+
+
+def summarize_focus(timed_scores, message_times, session_seconds):
+    """The session summary: every whole second is not tracked if its midpoint lies in a stretch without landmark
+    messages, else distracted if it lies in a distracted interval, else focused. Returns total_seconds,
+    focused_seconds, not_tracked_seconds, longest_focused_seconds and the timeline as segments [{start, end, state}]
+    (seconds, end exclusive)."""
     total = round(session_seconds)
-    intervals = distracted_intervals(timed_scores, session_seconds)
+    untracked = untracked_intervals(message_times, session_seconds)
+    distracted = distracted_intervals(timed_scores, session_seconds)
     segments = []
     for second in range(total):
-        state = "distracted" if any(start <= second + 0.5 < end for start, end in intervals) else "focused"
+        midpoint = second + 0.5
+        if any(start <= midpoint < end for start, end in untracked):
+            state = "not_tracked"
+        elif any(start <= midpoint < end for start, end in distracted):
+            state = "distracted"
+        else:
+            state = "focused"
         if segments and segments[-1]["state"] == state:
             segments[-1]["end"] = second + 1
         else:
             segments.append({"start": second, "end": second + 1, "state": state})
-    focused = [segment["end"] - segment["start"] for segment in segments if segment["state"] == "focused"]
+    def lengths(state):
+        return [segment["end"] - segment["start"] for segment in segments if segment["state"] == state]
+
+    focused = lengths("focused")
     return {
         "total_seconds": total,
         "focused_seconds": sum(focused),
+        "not_tracked_seconds": sum(lengths("not_tracked")),
         "longest_focused_seconds": max(focused, default=0),
         "segments": segments,
     }
@@ -51,9 +78,9 @@ def summarize_focus(timed_scores, session_seconds):
 
 @router.get("/summary")
 async def get_session_summary():
-    """The most recent session's summary (see summarize_focus), from its scores (cv_project/landmark_pipeline.py)
-    and how long it actually ran. All zeros before the first session."""
+    """The most recent session's summary (see summarize_focus), from its scores and landmark message times
+    (cv_project/landmark_pipeline.py) and how long it actually ran. All zeros before the first session."""
     session = latest_session()
     if session is None:
-        return summarize_focus([], 0)
-    return summarize_focus(session.gaze_scores, session.session_length())
+        return summarize_focus([], [], 0)
+    return summarize_focus(session.gaze_scores, session.message_times, session.session_length())

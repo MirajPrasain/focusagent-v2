@@ -141,6 +141,9 @@ class LandmarkPipeline:
         self.session_stopped = None  # time.monotonic() when the connection closed, None while it's open
         # Every score sent to the client this session, in order, as (seconds since the session clock started, score)
         self.gaze_scores = []
+        # When each landmark message of the session arrived, in seconds since the session clock started, scored or
+        # not. Gaps in it are time the browser wasn't tracking (the session summary's "not tracked")
+        self.message_times = []
         # get_gaze_score's eyes-closed streak
         self.scoring_state = {"blink_counter": 0}
         # Calibration: the running phase (None when not calibrating), when its recording started, gaze_yaw samples
@@ -209,6 +212,7 @@ class LandmarkPipeline:
             if skipped or result["status"] == "ok":
                 self.session_started = time.monotonic()
                 self.gaze_scores = []
+                self.message_times = []
             return result
         else:
             logger.warning(f"Unknown calibration phase: {message}")
@@ -300,6 +304,7 @@ class LandmarkPipeline:
         elif time.monotonic() - self.session_started > self.session_duration:
             reply = SESSION_ENDED
         else:
+            self.message_times.append(time.monotonic() - self.session_started)
             try:
                 score, cheat_events = get_gaze_score(points, gaze_yaw, self.scoring_state, self.screen_ranges,
                                                      message.get("faceCount") or 0)
