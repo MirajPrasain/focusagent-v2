@@ -139,8 +139,16 @@ const DEFAULT_MAIN_RANGE: GazeRange = [-15, 15];
 
 const HIDE_CAMERA_KEY = 'focusagent.hideCamera';
 
-// The pop-out window's starting size in CSS pixels; the user can resize it
-const PIP_SIZE = { width: 300, height: 340 };
+// The pop-out window is a compact widget that opens at this size (CSS pixels), which is its content's height: 14px
+// padding, the 32px row, a 10px gap, the 16px strip row, 14px padding. Showing the camera grows it by the
+// thumbnail's width plus the gap next to it
+const PIP_SIZE = { width: 320, height: 86 };
+const PIP_THUMB_WIDTH = 64;
+const PIP_THUMB_GAP = 12;
+
+// Buttons stay disabled until the websocket is open; after this long still connecting, the overlay adds that the
+// server may be waking up (a free-tier host can take up to a minute)
+const CONNECT_SLOW_MS = 10000;
 // Hide camera shrinks the preview out of sight instead of removing it: face tracking reads the video
 const HIDDEN_CAMERA_CLASS = 'pointer-events-none fixed left-0 top-0 h-px w-px overflow-hidden opacity-0';
 
@@ -178,19 +186,24 @@ type StripRun = { state: 'focused' | 'distracted'; start: number; end: number };
 
 // The last STRIP_WINDOW_MS of the session, starting at `from` (the strip fills from the left for the first
 // STRIP_WINDOW_MS). Time without a face or without scores is left empty
-function FocusStrip({ runs, from }: { runs: StripRun[]; from: number }) {
+// compact: just the thin bar, growing to fill its row (the pop-out window), without the label and legend
+function FocusStrip({ runs, from, compact = false }: { runs: StripRun[]; from: number; compact?: boolean }) {
   const at = (t: number) => Math.min(Math.max((t - from) / STRIP_WINDOW_MS, 0), 1) * 100;
+  const bar = (
+    <div className={`relative overflow-hidden rounded-full bg-border ${compact ? 'h-1.5 min-w-0 flex-1' : 'h-2'}`}>
+      {runs.map((run) => (
+        <div
+          key={run.start}
+          className={`absolute inset-y-0 ${run.state === 'focused' ? 'bg-accent' : 'bg-distracted'}`}
+          style={{ left: `${at(run.start)}%`, width: `${at(run.end) - at(run.start)}%` }}
+        />
+      ))}
+    </div>
+  );
+  if (compact) return bar;
   return (
     <div>
-      <div className="relative h-2 overflow-hidden rounded-full bg-border">
-        {runs.map((run) => (
-          <div
-            key={run.start}
-            className={`absolute inset-y-0 ${run.state === 'focused' ? 'bg-accent' : 'bg-distracted'}`}
-            style={{ left: `${at(run.start)}%`, width: `${at(run.end) - at(run.start)}%` }}
-          />
-        ))}
-      </div>
+      {bar}
       <div className="mt-1.5 flex items-center gap-3 text-[11px] text-fg-secondary">
         <span>Last 5 minutes</span>
         <span className="ml-auto inline-flex items-center gap-1">
@@ -272,6 +285,10 @@ function Session() {
   const [pipWindow, setPipWindow] = useState<Window | null>(null);
   const pipWindowRef = useRef<Window | null>(null);
   pipWindowRef.current = pipWindow;
+  // The camera thumbnail in the pop-out window. Off each time it opens; the camera keeps running when it's hidden
+  const [pipShowCamera, setPipShowCamera] = useState(false);
+  const pipCameraShownRef = useRef(false); // what the window was last sized for
+  const pipContentRef = useRef<HTMLDivElement>(null);
   // Set when the tab is hidden without the pop-out window open (tracking lapses), for the note shown on return
   const hiddenUntrackedRef = useRef(false);
 
@@ -324,6 +341,9 @@ function Session() {
   const [cameraError, setCameraError] = useState(false);
   const [modelError, setModelError] = useState(false);
   const [backendLost, setBackendLost] = useState(false);
+  // The websocket is open: until then nothing can be sent, so the calibration buttons stay disabled
+  const [socketOpen, setSocketOpen] = useState(false);
+  const [connectSlow, setConnectSlow] = useState(false);
 
   // API URL - MediaPipe backend for face detection, AI messages, and TTS
   const MEDIAPIPE_API_URL = import.meta.env.VITE_MEDIAPIPE_API_URL || 'http://localhost:8001';
@@ -520,10 +540,16 @@ function Session() {
     
     const socket = new WebSocket(wsUrl);
     socketRef.current = socket;
+    setSocketOpen(false);
+    setConnectSlow(false);
+    const slowTimer = setTimeout(() => setConnectSlow(true), CONNECT_SLOW_MS);
 
     socket.onopen = () => {
+      if (socketRef.current !== socket) return;
       if (DEBUG_LOGS) console.log("Connected to backend Study WebSocket server");
+      clearTimeout(slowTimer);
       socket.send(JSON.stringify({ duration }));
+      setSocketOpen(true);
     };
 
     // onmessage receives {score, cheat_events, distracted, gaze} back and drives the live view: status label and
@@ -605,21 +631,25 @@ function Session() {
     socket.onclose = (event) => {
       if (socketRef.current !== socket) return;
       if (DEBUG_LOGS) console.log("WebSocket connection closed. Code:", event.code, "Reason:", event.reason);
+      clearTimeout(slowTimer);
+      setSocketOpen(false);
       setBackendLost(true);
       // No more scores: the strip stops drawing the last state
       focusStateRef.current = null;
     };
 
     return () => {
+      clearTimeout(slowTimer);
       if (socketRef.current) socketRef.current.close();
     };
   }, [duration, MEDIAPIPE_API_URL]);
 
+  // Sends a calibration message. Returns false, sending nothing, unless the websocket is open
   const sendCalibration = useCallback((phase: string, extra: Record<string, unknown> = {}) => {
     const socket = socketRef.current;
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'calibration', phase, ...extra }));
-    }
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify({ type: 'calibration', phase, ...extra }));
+    return true;
   }, []);
 
   // Stops a running calibration at its next step and silences it
@@ -723,15 +753,17 @@ function Session() {
 
   // Start calibration and Redo. Full screen needs a user gesture, so this only runs from a button click.
   const startCalibration = () => {
+    if (!socketOpen) return;
     cancelCalibration();
     enterFullscreen();
     runCalibration();
   };
 
   const skipCalibration = () => {
+    // The backend drops any samples, keeps the default range, and starts its session clock with ours. If it can't
+    // be told (socket not open), the session must not start either
+    if (!sendCalibration('done', { skipped: true })) return;
     cancelCalibration();
-    // The backend drops any samples, keeps the default range, and restarts its session clock with ours
-    sendCalibration('done', { skipped: true });
     setCalibrationView(IDLE_VIEW);
     setCalibrationStatus('done');
   };
@@ -782,6 +814,8 @@ const handleEndSession = () => {
   // keeps going
   const popOut = async () => {
     try {
+      setPipShowCamera(false);
+      pipCameraShownRef.current = false;
       const pip = await openPipWindow(PIP_SIZE.width, PIP_SIZE.height);
       pip.addEventListener('pagehide', () => {
         // Closed while the tab is hidden: tracking lapses from here, as without the pop-out window
@@ -797,6 +831,27 @@ const handleEndSession = () => {
   // Leaving the page closes the pop-out window
   useEffect(() => () => pipWindowRef.current?.close(), []);
 
+  // Keeps the pop-out window fitted to its content, so it has no empty space: the width by the thumbnail's when
+  // Show camera turns it on or off, and the height to the content's if that differs from the window's. The window
+  // is only ever resized by these differences, so a size the user chose stays. Resizing needs a user gesture in the
+  // pop-out window: the Show camera click has one; a window that was just opened doesn't, but it opened at the right
+  // size
+  useEffect(() => {
+    const content = pipContentRef.current;
+    if (!pipWindow || !content) return;
+    const widthChange = pipShowCamera === pipCameraShownRef.current ? 0
+      : (pipShowCamera ? 1 : -1) * (PIP_THUMB_WIDTH + PIP_THUMB_GAP);
+    pipCameraShownRef.current = pipShowCamera;
+    const heightChange = content.offsetHeight - pipWindow.innerHeight;
+    if (widthChange === 0 && Math.abs(heightChange) <= 1) return;
+    try {
+      pipWindow.resizeBy(widthChange, heightChange);
+    } catch (err) {
+      // NotAllowedError without a user gesture. Must not escape: an error in an effect unmounts the whole page
+      console.warn('Pop out window not resized:', err);
+    }
+  }, [pipWindow, pipShowCamera]);
+
   const remaining = Math.max(duration * 60 - elapsedTime, 0);
   const connectionLost = sessionStarted && backendLost;
   const status: { label: string; dot: DotState } = connectionLost ? { label: 'Not tracking', dot: 'off' }
@@ -805,13 +860,16 @@ const handleEndSession = () => {
     ? [...cheatEvents].sort((a, b) => a - b).map((code) => DISTRACTION_REASONS[code]).filter(Boolean).join(', ')
     : '';
 
-  // Shown on the page, and in the pop-out window while it's open
+  // Shown on the page, and (except statusBlock's reason line) in the pop-out window while it's open
+  const statusLabel = (
+    <div role="status" className="flex min-w-0 items-center gap-2 text-base font-medium">
+      <StatusDot state={status.dot} />
+      <span className="truncate">{status.label}</span>
+    </div>
+  );
   const statusBlock = (
     <div className="min-w-0">
-      <div role="status" className="flex items-center gap-2 text-base font-medium">
-        <StatusDot state={status.dot} />
-        {status.label}
-      </div>
+      {statusLabel}
       <div className="min-h-4 pl-[18px] text-xs text-fg-secondary">{reason}</div>
     </div>
   );
@@ -911,21 +969,43 @@ const handleEndSession = () => {
         </footer>
       </div>
 
-      {/* The pop-out window: same pieces, smaller */}
+      {/* The pop-out window: a compact widget. One row (status, countdown, End) over the thin strip, with the
+          camera thumbnail at the left when shown. The content fills the window (see the fit effect above) */}
       {pipWindow && createPortal(
-        <div className="flex h-screen flex-col gap-3 p-3">
-          <header className="flex items-start justify-between gap-2">
-            {statusBlock}
-            {endControls}
-          </header>
-          <div className="text-center text-4xl font-light tabular-nums tracking-tight">{formatClock(remaining)}</div>
-          <FocusStrip runs={strip.runs} from={strip.from} />
-          <div className="mt-auto flex items-end justify-between gap-3">
+        <div className="flex h-screen items-center">
+          <div ref={pipContentRef} className="flex w-full items-center gap-3 p-3.5">
             <CameraSlot
               video={video}
-              className={hideCamera ? HIDDEN_CAMERA_CLASS : 'aspect-[4/3] w-28 overflow-hidden rounded-lg'}
+              className={pipShowCamera
+                ? 'h-12 w-16 shrink-0 overflow-hidden rounded-md'
+                : HIDDEN_CAMERA_CLASS}
             />
-            {hideCameraToggle}
+            <div className="flex min-w-0 flex-1 flex-col gap-2.5">
+              <div className="flex min-h-8 items-center gap-3">
+                {statusLabel}
+                <div className="ml-auto flex shrink-0 items-center gap-3">
+                  {/* Room for the End confirmation */}
+                  {!confirmingEnd && (
+                    <span className="text-2xl font-light leading-8 tabular-nums tracking-tight">
+                      {formatClock(remaining)}
+                    </span>
+                  )}
+                  {endControls}
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <FocusStrip runs={strip.runs} from={strip.from} compact />
+                <Button
+                  variant="text"
+                  size="sm"
+                  className="shrink-0 whitespace-nowrap"
+                  aria-pressed={pipShowCamera}
+                  onClick={() => setPipShowCamera((shown) => !shown)}
+                >
+                  Show camera
+                </Button>
+              </div>
+            </div>
           </div>
         </div>,
         pipWindow.document.body,
@@ -947,12 +1027,18 @@ const handleEndSession = () => {
                   ? calibrationFailure && CALIBRATION_FAILURE_MESSAGES[calibrationFailure]
                   : calibrationView.prompt}
             </div>
+            {!socketOpen && !backendLost && (
+              <div role="status" className="mt-2 text-fg-secondary">
+                <div>Connecting to server…</div>
+                {connectSlow && <div>The server may be waking up, this can take up to a minute.</div>}
+              </div>
+            )}
             {calibrationStatus === 'waiting' && (
               <>
                 <div className="mt-2 text-fg-secondary">
                   The page goes full screen while you follow a dot with your eyes.
                 </div>
-                <Button onClick={startCalibration} disabled={!faceSeen} className="mt-8">
+                <Button onClick={startCalibration} disabled={!faceSeen || !socketOpen} className="mt-8">
                   Start calibration
                 </Button>
               </>
@@ -1005,12 +1091,13 @@ const handleEndSession = () => {
 
           <div className="absolute bottom-8 inset-x-0 flex justify-center gap-6">
             {calibrationStatus !== 'waiting' && (
-              <Button variant={calibrationStatus === 'failed' ? 'primary' : 'text'} onClick={startCalibration}>
+              <Button variant={calibrationStatus === 'failed' ? 'primary' : 'text'} onClick={startCalibration}
+                disabled={!socketOpen}>
                 Redo calibration
               </Button>
             )}
             {calibrationStatus !== 'checking' && (
-              <Button variant="text" onClick={skipCalibration}>
+              <Button variant="text" onClick={skipCalibration} disabled={!socketOpen}>
                 Skip
               </Button>
             )}
