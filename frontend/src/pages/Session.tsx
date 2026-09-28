@@ -71,8 +71,9 @@ function exitFullscreen() {
 // top edge left to right, right edge down, bottom edge right to left, left edge up
 function borderPoint(t: number) {
   const lo = 3, hi = 97;
-  const edge = Math.min(Math.floor(t * 4), 3);
-  const along = (t * 4 - edge) * (hi - lo);
+  const lap = Math.min(Math.max(t, 0), 1) * 4; // t is a fraction of the lap: keep it in 0..1
+  const edge = Math.min(Math.floor(lap), 3);
+  const along = (lap - edge) * (hi - lo);
   return [
     { x: lo + along, y: lo },
     { x: hi, y: lo + along },
@@ -86,9 +87,14 @@ function ScanDot({ moving }: { moving: boolean }) {
   const [t, setT] = useState(0);
   useEffect(() => {
     if (!moving) return;
-    const start = performance.now();
+    setT(0); // a redo starts the lap over, not from where the last one ended
+    // The lap starts at the first frame's own timestamp. performance.now() taken here can be later than that
+    // timestamp (a frame's timestamp is when it began), which made the elapsed time negative: t < 0 picked no edge
+    // and the render threw
+    let start: number | null = null;
     let frame = 0;
     const tick = (now: number) => {
+      if (start === null) start = now;
       const progress = Math.min((now - start) / (MAIN_SCAN_SECONDS * 1000), 1);
       setT(progress);
       if (progress < 1) frame = requestAnimationFrame(tick);
