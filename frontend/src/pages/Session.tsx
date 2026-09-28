@@ -197,7 +197,8 @@ function formatClock(totalSeconds: number) {
 type StripRun = { state: 'focused' | 'distracted'; start: number; end: number };
 
 // The last STRIP_WINDOW_MS of the session, starting at `from` (the strip fills from the left for the first
-// STRIP_WINDOW_MS). Time without a face or without scores is left empty
+// STRIP_WINDOW_MS). Time without a face shows as distracted, as the summary counts it; time without scores is left
+// empty
 // compact: just the thin bar, growing to fill its row (the pop-out window), without the card, label and legend
 function FocusStrip({ runs, from, compact = false }: { runs: StripRun[]; from: number; compact?: boolean }) {
   const at = (t: number) => Math.min(Math.max((t - from) / STRIP_WINDOW_MS, 0), 1) * 100;
@@ -507,7 +508,8 @@ function Session() {
     if (!sessionStarted) return;
     const timer = setInterval(() => {
       const now = Date.now();
-      const state = focusStateRef.current;
+      // Can't see you counts as distracted here, as it does in the summary
+      const state = focusStateRef.current === 'away' ? 'distracted' : focusStateRef.current;
       setStrip(({ runs }) => {
         const kept = runs.filter((run) => run.end > now - STRIP_WINDOW_MS);
         const last = kept[kept.length - 1];
