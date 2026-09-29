@@ -10,3 +10,8 @@ websockets==15.0.1
 
 # Additional utilities
 pydantic==2.11.10
+
+
+beanie
+motor
+python-dotenv
