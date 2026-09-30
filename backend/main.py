@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from models import Session, User
+from routes_auth import router as auth_router
 from ws_routes import study_ws, charts
 
 load_dotenv()
@@ -27,6 +28,9 @@ app.include_router(study_ws.router)
 
 # Session summary endpoint
 app.include_router(charts.router)
+
+# Signup/login and the auth dependency's test route
+app.include_router(auth_router)
 
 
 @app.on_event("startup")
