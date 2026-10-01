@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
+import AccountActions from '../components/AccountActions';
 import Button from '../components/ui/Button';
 import Eyebrow from '../components/ui/Eyebrow';
 import PageShell, { GUTTER } from '../components/ui/PageShell';
 import SegmentBar, { type SegmentTone } from '../components/ui/SegmentBar';
 import StatusDot from '../components/ui/StatusDot';
+import { apiFetch } from '../lib/api';
 
 // GET /summary (backend/ws_routes/charts.py): the most recent session, in whole seconds. A stretch is distracted
 // only if the score stayed below 40 for at least 2 seconds; not tracked where the browser sent no landmark message
@@ -24,8 +26,6 @@ const SEGMENT_TONES: Record<Segment['state'], SegmentTone> = {
   distracted: 'distracted',
   not_tracked: 'away',
 };
-
-const API_URL = import.meta.env.VITE_MEDIAPIPE_API_URL || 'http://localhost:8001';
 
 // m:ss, for the timeline's time labels
 function formatClock(seconds: number) {
@@ -78,18 +78,23 @@ function Stat({ label, value, unit }: { label: string; value: number; unit: stri
 
 const Summary = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [summary, setSummary] = useState<SessionSummary | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`${API_URL}/summary`)
+    // The planned length in minutes, passed only by Session as it ends: its presence means this session is unsaved
+    const duration = (location.state as { duration?: number } | null)?.duration;
+    apiFetch('/summary')
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
       .then((data: SessionSummary) => {
-        if (!cancelled) setSummary(data);
+        if (cancelled) return;
+        setSummary(data);
+        if (typeof duration === 'number' && data.total_seconds > 0) saveSession(data, duration);
       })
       .catch((err) => {
         console.error('Failed to load the session summary:', err);
@@ -98,7 +103,21 @@ const Summary = () => {
     return () => {
       cancelled = true;
     };
+    // Once, on arrival: the state it reads is cleared by the save
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // POST /sessions (backend/routes_sessions.py) takes the summary's fields plus the planned length in seconds. The
+  // arrival state is cleared first, so a reload of this page can't save the session twice. A failed save is only
+  // logged: the summary still shows
+  const saveSession = (data: SessionSummary, duration: number) => {
+    navigate(location.pathname, { replace: true, state: null });
+    apiFetch('/sessions', { method: 'POST', body: JSON.stringify({ ...data, duration_seconds: duration * 60 }) })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      })
+      .catch((err) => console.error('Failed to save the session to your history:', err));
+  };
 
   const again = (
     <Button size="lg" onClick={() => navigate('/setup')}>
@@ -169,7 +188,7 @@ const Summary = () => {
   }
 
   return (
-    <PageShell>
+    <PageShell actions={<AccountActions />}>
       <div className={`flex flex-1 flex-col ${GUTTER}`}>{body}</div>
     </PageShell>
   );

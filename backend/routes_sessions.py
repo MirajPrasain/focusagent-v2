@@ -42,7 +42,8 @@ async def create_session(body: SessionSummary, current_user: User = Depends(get_
 
 @router.get("/sessions")
 async def list_sessions(current_user: User = Depends(get_current_user)):
-    """The current user's sessions, most recent first, without their timelines."""
+    """The current user's sessions, most recent first, without their timelines. not_tracked_seconds comes from the
+    timeline, so a client can take the focused share of tracked time the way the summary page does."""
     sessions = await Session.find(Session.user_id == str(current_user.id)).sort(-Session.created_at).to_list()
     return [
         {
@@ -50,6 +51,8 @@ async def list_sessions(current_user: User = Depends(get_current_user)):
             "duration_seconds": session.duration_seconds,
             "focused_seconds": session.focused_seconds,
             "total_seconds": session.total_seconds,
+            "not_tracked_seconds": sum(
+                segment["end"] - segment["start"] for segment in session.timeline if segment["state"] == "not_tracked"),
             "longest_stretch_seconds": session.longest_stretch_seconds,
             "created_at": session.created_at,
         }

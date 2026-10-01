@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { Bell, Eye, EyeOff, PictureInPicture2, X } from 'lucide-react';
 import { detectFaces, faceModelFailed } from '../lib/faceLandmarker'
+import { API_URL } from '../lib/api'
 import { openPipWindow, pipSupported } from '../lib/pip'
 import { speak, speakAndWait, sleep } from '../lib/speech'
 import Button from '../components/ui/Button'
@@ -361,9 +362,6 @@ function Session() {
   const [socketOpen, setSocketOpen] = useState(false);
   const [connectSlow, setConnectSlow] = useState(false);
 
-  // API URL - MediaPipe backend for face detection, AI messages, and TTS
-  const MEDIAPIPE_API_URL = import.meta.env.VITE_MEDIAPIPE_API_URL || 'http://localhost:8001';
-
   // Start webcam stream, and release the camera when the page is left (End Session also stops it)
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -550,9 +548,9 @@ function Session() {
 
   // Setup WebSocket connection (the landmark effect above sends on it)
   useEffect(() => {
-    if (DEBUG_LOGS) console.log('Attempting to connect to MediaPipe backend:', MEDIAPIPE_API_URL);
-    const protocol = MEDIAPIPE_API_URL.startsWith('https://') ? 'wss://' : 'ws://';
-    const wsUrl = `${protocol}${MEDIAPIPE_API_URL.replace('http://', '').replace('https://', '')}/ws/study`;
+    if (DEBUG_LOGS) console.log('Attempting to connect to MediaPipe backend:', API_URL);
+    const protocol = API_URL.startsWith('https://') ? 'wss://' : 'ws://';
+    const wsUrl = `${protocol}${API_URL.replace('http://', '').replace('https://', '')}/ws/study`;
     if (DEBUG_LOGS) console.log('WebSocket URL:', wsUrl);
     
     const socket = new WebSocket(wsUrl);
@@ -642,7 +640,7 @@ function Session() {
     socket.onerror = (err) => {
       if (socketRef.current !== socket) return;
       console.error("WebSocket error:", err);
-      console.error("Is MediaPipe backend running on", MEDIAPIPE_API_URL, "?");
+      console.error("Is MediaPipe backend running on", API_URL, "?");
     };
 
     socket.onclose = (event) => {
@@ -659,7 +657,7 @@ function Session() {
       clearTimeout(slowTimer);
       if (socketRef.current) socketRef.current.close();
     };
-  }, [duration, MEDIAPIPE_API_URL]);
+  }, [duration]);
 
   // Sends a calibration message. Returns false, sending nothing, unless the websocket is open
   const sendCalibration = useCallback((phase: string, extra: Record<string, unknown> = {}) => {
@@ -797,7 +795,8 @@ const handleEndSession = () => {
     (video.srcObject as MediaStream | null)?.getTracks().forEach((track) => track.stop());
 
     pipWindowRef.current?.close();
-    navigate("/summary");
+    // Summary saves the session to the account (POST /sessions) when it arrives with the planned length
+    navigate("/summary", { state: { duration } });
   };
 
   // The session timer and the websocket are set up once, so they end the session through this ref rather than

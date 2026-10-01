@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, BarChart3, Crosshair, Lock } from 'lucide-react';
+import AccountActions from '../components/AccountActions';
 import Button from '../components/ui/Button';
 import Eyebrow from '../components/ui/Eyebrow';
 import PageShell, { GUTTER } from '../components/ui/PageShell';
@@ -51,10 +52,13 @@ const Home = () => {
   return (
     <PageShell
       actions={
-        <span className="hidden items-center gap-2 rounded-full border border-border px-3.5 py-2 font-mono text-xs text-fg-secondary sm:inline-flex">
-          <Lock className="h-3.5 w-3.5" aria-hidden="true" />
-          Runs on your device
-        </span>
+        <>
+          <span className="hidden items-center gap-2 rounded-full border border-border px-3.5 py-2 font-mono text-xs text-fg-secondary sm:inline-flex">
+            <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+            Runs on your device
+          </span>
+          <AccountActions />
+        </>
       }
     >
       <div className={`grid flex-1 items-center gap-16 py-16 lg:grid-cols-[1.15fr_1fr] 2xl:pl-28 ${GUTTER}`}>
