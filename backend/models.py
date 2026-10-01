@@ -1,11 +1,14 @@
 from datetime import datetime
+from typing import Optional
 
 from beanie import Document
 
 
 class User(Document):
     email: str
-    password_hash: str
+    # None for an account made through Google sign-in, which has no password
+    password_hash: Optional[str] = None
+    google_id: Optional[str] = None
     created_at: datetime
 
     class Settings:
