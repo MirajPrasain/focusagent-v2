@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from beanie import PydanticObjectId
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from auth import create_access_token, decode_access_token, hash_password, verify_password
@@ -74,10 +74,3 @@ async def get_current_user(authorization: str = Header(None)) -> User:
         raise unauthorized
 
     return user
-
-
-# TEMPORARY: proves get_current_user works end to end. Delete this route
-# once real protected routes land.
-@router.get("/me")
-async def me(current_user: User = Depends(get_current_user)):
-    return {"email": current_user.email}

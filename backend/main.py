@@ -1,5 +1,4 @@
 import os
-from datetime import datetime, timezone
 
 from beanie import init_beanie
 from dotenv import load_dotenv
@@ -30,7 +29,7 @@ app.include_router(study_ws.router)
 # Session summary endpoint
 app.include_router(charts.router)
 
-# Signup/login and the auth dependency's test route
+# Signup and login
 app.include_router(auth_router)
 
 # Saving and listing the logged-in user's sessions
@@ -49,18 +48,3 @@ async def startup_db():
 @app.get("/")
 async def health():
     return {"status": "ok"}
-
-
-# TEMPORARY: proves the Mongo/Beanie connection works. Delete this route
-# once the real auth routes land.
-@app.get("/db-check")
-async def db_check():
-    test_user = User(
-        email="db-check@example.com",
-        password_hash="not-a-real-hash",
-        created_at=datetime.now(timezone.utc),
-    )
-    await test_user.insert()
-    fetched = await User.get(test_user.id)
-    await fetched.delete()
-    return {"ok": True}
