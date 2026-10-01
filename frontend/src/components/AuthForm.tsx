@@ -4,7 +4,7 @@ import Button from './ui/Button';
 import Card from './ui/Card';
 import Eyebrow from './ui/Eyebrow';
 import PageShell, { GUTTER } from './ui/PageShell';
-import { apiFetch, errorDetail, getToken, saveToken } from '../lib/api';
+import { API_URL, apiFetch, errorDetail, getToken, saveToken } from '../lib/api';
 
 type AuthFormProps = {
   // POST /signup or /login (backend/routes_auth.py): both take {email, password} and return {token}
@@ -22,7 +22,8 @@ const INPUT = 'mt-2 h-11 w-full rounded-[10px] border border-border bg-surface-r
   + 'placeholder:text-fg-muted transition-colors focus:border-accent focus:outline-none';
 
 // The Login and Signup pages: email and password, then on to Setup with the token stored. A failure shows the
-// backend's message ("Invalid email or password", "Email already registered") under the fields
+// backend's message ("Invalid email or password", "Email already registered") under the fields. Or Google, which
+// leaves the app for the backend's GET /auth/google and comes back through /oauth-callback (pages/OAuthCallback.tsx)
 export default function AuthForm({ endpoint, eyebrow, title, submitLabel, busyLabel, switchPrompt, switchTo,
   switchLabel }: AuthFormProps) {
   const navigate = useNavigate();
@@ -95,6 +96,10 @@ export default function AuthForm({ endpoint, eyebrow, title, submitLabel, busyLa
               {busy ? busyLabel : submitLabel}
             </Button>
           </form>
+          <Button variant="secondary" size="lg" className="mt-3 w-full"
+            onClick={() => { window.location.href = `${API_URL}/auth/google`; }}>
+            Continue with Google
+          </Button>
           <p className="mt-6 text-sm text-fg-muted">
             {switchPrompt}{' '}
             <Link to={switchTo} replace className="text-fg-secondary underline-offset-4 hover:text-fg hover:underline">

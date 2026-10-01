@@ -4,6 +4,7 @@ import RequireAuth from './components/RequireAuth';
 import Home from './pages/Home';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
+import OAuthCallback from './pages/OAuthCallback';
 import Setup from './pages/Setup';
 import Session from './pages/Session';
 import Summary from './pages/Summary';
@@ -20,6 +21,8 @@ function App() {
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
+        {/* Google sign-in lands here with the token: public, since there's no stored token yet */}
+        <Route path="/oauth-callback" element={<OAuthCallback />} />
         {/* Signed-in only: without a token these redirect to /login */}
         <Route element={<RequireAuth />}>
           <Route path="/setup" element={<Setup />} />
