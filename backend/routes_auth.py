@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Optional
 
 from beanie import PydanticObjectId
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -46,22 +47,29 @@ async def login(body: LoginRequest):
     return {"token": create_access_token(str(user.id))}
 
 
+async def user_for_token(token: Optional[str]) -> Optional[User]:
+    """The user a token from /signup or /login belongs to, or None if it's missing, invalid or expired, or its user
+    is gone. Shared by get_current_user and the /ws/study websocket (ws_routes/study_ws.py)."""
+    if not token:
+        return None
+
+    user_id = decode_access_token(token)
+    if user_id is None:
+        return None
+
+    try:
+        return await User.get(PydanticObjectId(user_id))
+    except Exception:
+        return None
+
+
 async def get_current_user(authorization: str = Header(None)) -> User:
     unauthorized = HTTPException(status_code=401, detail="Not authenticated")
 
     if not authorization or not authorization.startswith("Bearer "):
         raise unauthorized
 
-    token = authorization.removeprefix("Bearer ")
-    user_id = decode_access_token(token)
-    if user_id is None:
-        raise unauthorized
-
-    try:
-        user = await User.get(PydanticObjectId(user_id))
-    except Exception:
-        raise unauthorized
-
+    user = await user_for_token(authorization.removeprefix("Bearer "))
     if user is None:
         raise unauthorized
 

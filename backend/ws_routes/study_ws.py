@@ -3,6 +3,7 @@ import json
 import logging
 
 from cv_project.landmark_pipeline import LandmarkPipeline
+from routes_auth import user_for_token
 
 
 
@@ -12,26 +13,30 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# The most recent session's pipeline, kept after its connection closes so the session summary
-# (ws_routes/charts.py) can read its scores. One slot for the whole server: a new session replaces it.
-_latest_session = None
+# Each user's most recent session's pipeline, by user id, kept after its connection closes so the session summary
+# (ws_routes/charts.py) can read its scores. A user's next session replaces it.
+_sessions_by_user = {}
+
+# Close code for a connection whose first message has no valid token (the 4000s are free for applications). The
+# frontend (Session.tsx) drops the stored token and goes to /login on it
+UNAUTHORIZED_CLOSE_CODE = 4401
 
 
-def latest_session():
-    """The LandmarkPipeline of the most recent session, or None before the first one."""
-    return _latest_session
+def session_for(user_id):
+    """The LandmarkPipeline of this user's most recent session, or None before their first one."""
+    return _sessions_by_user.get(user_id)
 
 
-# Session setup: the first message is {"duration": minutes}
-async def receive_session_duration(websocket):
-    """Reads the session length from the first message and returns it in seconds.
-    Returns None (after telling the client) if it couldn't."""
+# Session setup: the first message is {"duration": minutes, "token": the JWT from /signup or /login}
+async def receive_session_start(websocket):
+    """Reads the first message and returns (session length in seconds, token). Returns None (after telling the
+    client) if it couldn't."""
     try:
         data = await websocket.receive_text()
         parsed = json.loads(data)
         duration = parsed.get("duration", 30)  # Default to 30 minutes
         logger.info(f"Session duration set to: {duration} minutes")
-        return duration * 60
+        return duration * 60, parsed.get("token")
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON received: {e}")
         await websocket.send_text(json.dumps({
@@ -52,9 +57,9 @@ async def receive_session_duration(websocket):
 
 @router.websocket('/ws/study')
 async def study_session_handling(websocket: WebSocket):
-    """One connection per study session. The first message sets the duration; every message after that is a
-    landmark pipeline text message (cv_project/landmark_pipeline.py), answered with its reply if it has one."""
-    global _latest_session
+    """One connection per study session. The first message sets the duration and says whose session it is (no
+    valid token: the connection is closed with UNAUTHORIZED_CLOSE_CODE); every message after that is a landmark
+    pipeline text message (cv_project/landmark_pipeline.py), answered with its reply if it has one."""
     await websocket.accept()
     logger.info("WebSocket connection established")
 
@@ -62,11 +67,17 @@ async def study_session_handling(websocket: WebSocket):
     pipeline = None
 
     try:
-        session_duration = await receive_session_duration(websocket)
-        if session_duration is None:
+        session_start = await receive_session_start(websocket)
+        if session_start is None:
+            return
+        session_duration, token = session_start
+        user = await user_for_token(token)
+        if user is None:
+            logger.info("WebSocket closed: no valid token")
+            await websocket.close(code=UNAUTHORIZED_CLOSE_CODE, reason="unauthorized")
             return
         pipeline = LandmarkPipeline(session_duration)
-        _latest_session = pipeline
+        _sessions_by_user[str(user.id)] = pipeline
 
         # Loop for receiving messages
         error_count = 0

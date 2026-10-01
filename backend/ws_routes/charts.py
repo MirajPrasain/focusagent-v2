@@ -1,6 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from cv_project.landmark_pipeline import DISTRACTED_BELOW
-from ws_routes.study_ws import latest_session
+from models import User
+from routes_auth import get_current_user
+from ws_routes.study_ws import session_for
 
 router = APIRouter()
 
@@ -77,10 +79,10 @@ def summarize_focus(timed_scores, message_times, session_seconds):
 
 
 @router.get("/summary")
-async def get_session_summary():
-    """The most recent session's summary (see summarize_focus), from its scores and landmark message times
-    (cv_project/landmark_pipeline.py) and how long it actually ran. All zeros before the first session."""
-    session = latest_session()
+async def get_session_summary(current_user: User = Depends(get_current_user)):
+    """The current user's most recent session's summary (see summarize_focus), from its scores and landmark message
+    times (cv_project/landmark_pipeline.py) and how long it actually ran. All zeros before their first session."""
+    session = session_for(str(current_user.id))
     if session is None:
         return summarize_focus([], [], 0)
     return summarize_focus(session.gaze_scores, session.message_times, session.session_length())

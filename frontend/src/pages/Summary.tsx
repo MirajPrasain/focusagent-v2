@@ -9,7 +9,7 @@ import SegmentBar, { type SegmentTone } from '../components/ui/SegmentBar';
 import StatusDot from '../components/ui/StatusDot';
 import { apiFetch } from '../lib/api';
 
-// GET /summary (backend/ws_routes/charts.py): the most recent session, in whole seconds. A stretch is distracted
+// GET /summary (backend/ws_routes/charts.py): this user's most recent session, in whole seconds. A stretch is distracted
 // only if the score stayed below 40 for at least 2 seconds; not tracked where the browser sent no landmark message
 // for more than 2 seconds
 type Segment = { start: number; end: number; state: 'focused' | 'distracted' | 'not_tracked' };
@@ -88,11 +88,16 @@ const Summary = () => {
     const duration = (location.state as { duration?: number } | null)?.duration;
     apiFetch('/summary')
       .then((res) => {
+        // The token was turned down (and dropped by apiFetch): sign in again
+        if (res.status === 401) {
+          if (!cancelled) navigate('/login', { replace: true });
+          return null;
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
-      .then((data: SessionSummary) => {
-        if (cancelled) return;
+      .then((data: SessionSummary | null) => {
+        if (cancelled || !data) return;
         setSummary(data);
         if (typeof duration === 'number' && data.total_seconds > 0) saveSession(data, duration);
       })

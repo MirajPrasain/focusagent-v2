@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { Bell, Eye, EyeOff, PictureInPicture2, X } from 'lucide-react';
 import { detectFaces, faceModelFailed } from '../lib/faceLandmarker'
-import { API_URL } from '../lib/api'
+import { API_URL, clearToken, getToken } from '../lib/api'
 import { openPipWindow, pipSupported } from '../lib/pip'
 import { speak, speakAndWait, sleep } from '../lib/speech'
 import Button from '../components/ui/Button'
@@ -158,6 +158,9 @@ const HIDE_CAMERA_KEY = 'focusagent.hideCamera';
 const PIP_SIZE = { width: 320, height: 90 };
 const PIP_THUMB_WIDTH = 64;
 const PIP_THUMB_GAP = 12;
+
+// The websocket's close code when the first message's token is missing or no longer good
+const UNAUTHORIZED_CLOSE_CODE = 4401;
 
 // Buttons stay disabled until the websocket is open; after this long still connecting, the overlay adds that the
 // server may be waking up (a free-tier host can take up to a minute)
@@ -563,7 +566,8 @@ function Session() {
       if (socketRef.current !== socket) return;
       if (DEBUG_LOGS) console.log("Connected to backend Study WebSocket server");
       clearTimeout(slowTimer);
-      socket.send(JSON.stringify({ duration }));
+      // The token says whose session this is, for their summary (GET /summary)
+      socket.send(JSON.stringify({ duration, token: getToken() }));
       setSocketOpen(true);
     };
 
@@ -647,6 +651,12 @@ function Session() {
       if (socketRef.current !== socket) return;
       if (DEBUG_LOGS) console.log("WebSocket connection closed. Code:", event.code, "Reason:", event.reason);
       clearTimeout(slowTimer);
+      // The backend turned the token down (backend/ws_routes/study_ws.py): drop it and sign in again
+      if (event.code === UNAUTHORIZED_CLOSE_CODE) {
+        clearToken();
+        navigate('/login', { replace: true });
+        return;
+      }
       setSocketOpen(false);
       setBackendLost(true);
       // No more scores: the strip stops drawing the last state
@@ -657,7 +667,7 @@ function Session() {
       clearTimeout(slowTimer);
       if (socketRef.current) socketRef.current.close();
     };
-  }, [duration]);
+  }, [duration, navigate]);
 
   // Sends a calibration message. Returns false, sending nothing, unless the websocket is open
   const sendCalibration = useCallback((phase: string, extra: Record<string, unknown> = {}) => {
