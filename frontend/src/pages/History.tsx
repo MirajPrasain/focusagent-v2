@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Trash2 } from 'lucide-react';
 import AccountActions from '../components/AccountActions';
 import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
 import Eyebrow from '../components/ui/Eyebrow';
 import PageShell, { GUTTER } from '../components/ui/PageShell';
-import { apiFetch } from '../lib/api';
+import { apiFetch, errorDetail } from '../lib/api';
 
 // GET /sessions (backend/routes_sessions.py): the signed-in user's sessions, newest first, in whole seconds
 type SessionRow = {
@@ -36,6 +36,8 @@ const History = () => {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [failed, setFailed] = useState(false);
+  // The session whose delete is in flight, so its button can't be pressed twice
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,6 +62,30 @@ const History = () => {
       cancelled = true;
     };
   }, [navigate]);
+
+  // DELETE /sessions/{id}, after a confirm, then drops the row from the list here rather than refetching.
+  // A 404 means it's already gone, so the row goes too
+  async function deleteSession(session: SessionRow) {
+    if (!window.confirm(`Delete the session from ${DATE_FORMAT.format(new Date(session.created_at))}? This can't be undone.`)) return;
+    setDeletingId(session.id);
+    try {
+      const res = await apiFetch(`/sessions/${session.id}`, { method: 'DELETE' });
+      if (res.status === 401) {
+        navigate('/login', { replace: true });
+        return;
+      }
+      if (!res.ok && res.status !== 404) {
+        window.alert(await errorDetail(res, "Couldn't delete that session."));
+        return;
+      }
+      setSessions((current) => current && current.filter((s) => s.id !== session.id));
+    } catch (err) {
+      console.error('Failed to delete session:', err);
+      window.alert("Couldn't delete that session.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   const start = (
     <Button size="lg" onClick={() => navigate('/setup')}>
@@ -90,6 +116,7 @@ const History = () => {
                 <th scope="col" className="px-3 pb-3 font-normal">Length</th>
                 <th scope="col" className="px-3 pb-3 font-normal">Focused</th>
                 <th scope="col" className="px-3 pb-3 font-normal">Longest stretch</th>
+                <th scope="col" className="px-3 pb-3 font-normal"><span className="sr-only">Delete</span></th>
               </tr>
             </thead>
             <tbody className="tabular-nums">
@@ -100,6 +127,17 @@ const History = () => {
                   <td className="whitespace-nowrap px-3 py-3.5 text-accent">{focusedPct(session)}%</td>
                   <td className="whitespace-nowrap px-3 py-3.5 text-fg-secondary">
                     {formatLength(session.longest_stretch_seconds)}
+                  </td>
+                  <td className="px-3 py-1.5 text-right">
+                    <Button
+                      variant="text"
+                      className="p-2 hover:text-distracted"
+                      aria-label={`Delete session from ${DATE_FORMAT.format(new Date(session.created_at))}`}
+                      disabled={deletingId === session.id}
+                      onClick={() => deleteSession(session)}
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    </Button>
                   </td>
                 </tr>
               ))}

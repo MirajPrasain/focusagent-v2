@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from bson import ObjectId
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from models import Session, User
@@ -58,3 +59,15 @@ async def list_sessions(current_user: User = Depends(get_current_user)):
         }
         for session in sessions
     ]
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def delete_session(session_id: str, current_user: User = Depends(get_current_user)):
+    """Deletes one of the current user's sessions. 404 when there's no such session (an id that isn't an ObjectId
+    can't name one), 403 when it belongs to someone else."""
+    session = await Session.get(session_id) if ObjectId.is_valid(session_id) else None
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not your session")
+    await session.delete()
