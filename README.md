@@ -15,7 +15,8 @@ entirely in your browser.
   actual eye and head movement to an on-screen range, instead of assuming a fixed gaze angle.
 - **End-of-session summary.** A timeline of the whole session broken into focused, distracted and
   not-tracked stretches, plus total focused time and the longest focused stretch.
-- **History.** Past sessions are saved to your account and listed with the same stats, and can be deleted.
+- **History.** Past sessions are saved to your account and listed with the same stats; click a session to
+  reopen its summary, or delete it.
 
 ## Architecture
 
