@@ -11,8 +11,8 @@ entirely in your browser.
 - **Live focus-scoring session.** Start a timed session, and the app scores how focused you are roughly
   5 times a second while it runs, with a live score and a "distraction detected" indicator.
 - **Calibration.** Before a session starts, you follow a dot around the edge of your screen (and
-  optionally look at five points on a second screen). This maps your actual eye and head movement to an
-  on-screen range, instead of assuming a fixed gaze angle.
+  optionally look at five points on a second screen), guided by recorded voice prompts. This maps your
+  actual eye and head movement to an on-screen range, instead of assuming a fixed gaze angle.
 - **End-of-session summary.** A timeline of the whole session broken into focused, distracted and
   not-tracked stretches, plus total focused time and the longest focused stretch.
 - **History.** Past sessions are saved to your account and listed with the same stats, and can be deleted.
@@ -38,7 +38,6 @@ flowchart LR
     DB[(MongoDB Atlas via Beanie)]
 
     FL -- "JSON: points, blendshapes,\nhead pose, face count" --> WS
-    WS -- "first message: {duration, token}" --> WS
     WS --> LP
     LP -- "score, cheat_events,\ndistracted, gaze" --> WS
     WS -- "reply over same socket" --> FL
@@ -94,11 +93,10 @@ after a session ends; `GET /sessions` and `/history` read back what's been saved
 
 ## Stack and deployment
 
-- **Backend:** FastAPI + Uvicorn, MediaPipe's browser-side model (no server-side CV library), Beanie/Motor
-  over MongoDB Atlas, deployed on Render as a Docker-based web service (`backend/Dockerfile`,
-  `backend/render.yaml`) with `autoDeploy: true`.
-- **Frontend:** React + TypeScript + Vite + Tailwind, deployed on Render as a static site with
-  auto-deploy from the repo.
+- **Backend:** FastAPI + Uvicorn, Beanie/Motor over MongoDB Atlas, deployed on Render as a Docker-based
+  web service (`backend/Dockerfile`, `backend/render.yaml`) with `autoDeploy: true`.
+- **Frontend:** React + TypeScript + Vite + Tailwind, MediaPipe's FaceLandmarker running client-side
+  (no server-side CV library), deployed on Render as a static site with auto-deploy from the repo.
 - **Beanie is pinned to `2.0.1`** (with matching `motor==3.7.1` and `pymongo==4.18.2`). From `2.1.0`,
   Beanie's `init_beanie` calls `client.append_metadata()`, which exists on PyMongo's async client but not
   on Motor's, so startup fails with `"MotorDatabase object is not callable"`. `2.0.1` is the last release
@@ -121,7 +119,8 @@ Frontend:
 ```bash
 cd frontend
 npm install
-cp .env .env.local      # or create .env.local directly, see below
+# create .env.local with VITE_MEDIAPIPE_API_URL=http://localhost:8001
+# (overrides the committed .env, which points at production)
 npm run dev             # runs on Vite's default port, 5173
 ```
 
@@ -163,6 +162,9 @@ locally, build your venv with 3.12 instead of relying on the checked-in one.
   uses the older fixed-threshold rules in `get_gaze_score()`, not a calibrated range.
 - No automated tests are checked into the repo (only ad hoc `*.log` files from manual test sessions,
   which are gitignored).
+- The MongoDB Atlas network allowlist is open to all IPs, since Render's outbound IPs aren't fixed.
+- The Render free-tier backend sleeps after inactivity, so the first load after a period of no traffic
+  can take about a minute.
 
 ## Screenshots
 
