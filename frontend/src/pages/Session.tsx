@@ -5,7 +5,8 @@ import { Bell, Eye, EyeOff, PictureInPicture2, X } from 'lucide-react';
 import { detectFaces, faceModelFailed } from '../lib/faceLandmarker'
 import { API_URL, clearToken, getToken } from '../lib/api'
 import { openPipWindow, pipSupported } from '../lib/pip'
-import { speak, speakAndWait, sleep } from '../lib/speech'
+import { clipText, playClip, playClipAndWait, stopClip, type ClipKey } from '../lib/calibrationAudio'
+import { sleep } from '../lib/speech'
 import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
 import Eyebrow from '../components/ui/Eyebrow'
@@ -20,7 +21,8 @@ import Switch from '../components/ui/Switch'
 const DEBUG_LOGS = false;
 
 // Screen calibration, started from the "Start calibration" button in full screen, before the session timer starts.
-// Every timed step: speak the instruction, wait for speech to end, voice countdown "3, 2, 1", record, "okay".
+// Every timed step: play the instruction, wait for it to end, voice countdown "3, 2, 1", record, "okay".
+// The voice is pre-recorded (lib/calibrationAudio.ts), falling back to text-to-speech if a clip won't play.
 // The backend (backend/cv_project/landmark_pipeline.py) is told {"type": "calibration", "phase": ...}:
 // "main" / "second_screen" when a recording starts, "idle" whenever it isn't recording, "done" at the end.
 // It turns the gaze recorded in each phase into this user's on-screen ranges and replies with the result.
@@ -40,12 +42,12 @@ const CALIBRATION_FAILURE_MESSAGES: Record<CalibrationFailure, string> = {
 };
 
 const SECOND_SCREEN_POINTS = [
-  { id: 'top_left', label: 'top left corner' },
-  { id: 'top_right', label: 'top right corner' },
-  { id: 'bottom_right', label: 'bottom right corner' },
-  { id: 'bottom_left', label: 'bottom left corner' },
-  { id: 'center', label: 'center' },
-];
+  { id: 'top_left', clip: 'second-screen-top-left' },
+  { id: 'top_right', clip: 'second-screen-top-right' },
+  { id: 'bottom_right', clip: 'second-screen-bottom-right' },
+  { id: 'bottom_left', clip: 'second-screen-bottom-left' },
+  { id: 'center', clip: 'second-screen-center' },
+] satisfies { id: string; clip: ClipKey }[];
 
 // waiting: for the Start calibration button; running: the steps below; checking: waiting for the backend's result;
 // failed: see CalibrationFailure; done: overlay closed, session timer running
@@ -681,6 +683,7 @@ function Session() {
   const cancelCalibration = useCallback(() => {
     calibrationRunRef.current += 1;
     window.speechSynthesis?.cancel();
+    stopClip();
     secondScreenAnswerRef.current?.(false);
     secondScreenAnswerRef.current = null;
   }, []);
@@ -696,38 +699,39 @@ function Session() {
     };
     const show = (view: Partial<CalibrationView>) => setCalibrationView({ ...IDLE_VIEW, ...view });
 
-    // Speak the instruction, wait for it to finish, count down "3, 2, 1", record, then say "okay".
+    // Play the instruction (also shown as the prompt), wait for it to finish, count down "3, 2, 1", record, then
+    // say "okay".
     // scan: show the main-screen dot. screenText: show only this text for the whole step (the user is looking
     // at another screen, so the dot, countdown and recording indicator would only pull their eyes back).
-    const record = async (prompt: string, phase: string, seconds: number,
+    const record = async (clip: ClipKey, phase: string, seconds: number,
                           { extra = {}, scan = false, screenText }:
                             { extra?: Record<string, unknown>; scan?: boolean; screenText?: string } = {}) => {
+      const prompt = clipText(clip);
       const view = (stage: Partial<CalibrationView>) =>
         show(screenText ? { prompt: screenText } : { prompt, dot: scan ? 'ready' : 'none', ...stage });
       view({});
-      await step(speakAndWait(prompt));
+      await step(playClipAndWait(clip));
       for (let n = COUNTDOWN_FROM; n > 0; n--) {
         view({ countdown: n });
-        speak(String(n));
+        playClip(`count-${n}` as ClipKey);
         await step(sleep(1000));
       }
       view({ dot: scan ? 'moving' : 'none', recording: true });
       sendCalibration(phase, extra);
       await step(sleep(seconds * 1000));
       sendCalibration('idle');
-      show({ prompt: screenText ?? 'Okay' });
-      await step(speakAndWait('Okay'));
+      show({ prompt: screenText ?? clipText('okay') });
+      await step(playClipAndWait('okay'));
     };
 
     try {
       setCalibrationStatus('running');
       sendCalibration('idle'); // calibrating from here on: the backend stops scoring
 
-      await record('Follow the dot with your eyes.', 'main', MAIN_SCAN_SECONDS, { scan: true });
+      await record('follow-dot', 'main', MAIN_SCAN_SECONDS, { scan: true });
 
-      const question = 'Do you use a second screen?';
-      show({ prompt: question, asking: true });
-      speak(question);
+      show({ prompt: clipText('second-screen-question'), asking: true });
+      playClip('second-screen-question');
       const hasSecondScreen = await step(new Promise<boolean>((resolve) => {
         secondScreenAnswerRef.current = resolve;
       }));
@@ -735,8 +739,7 @@ function Session() {
 
       if (hasSecondScreen) {
         for (const point of SECOND_SCREEN_POINTS) {
-          await record(`Look at the ${point.label} of your second screen. Keep looking until you hear 'okay'.`,
-            'second_screen', SECOND_SCREEN_POINT_SECONDS,
+          await record(point.clip, 'second_screen', SECOND_SCREEN_POINT_SECONDS,
             { extra: { point: point.id }, screenText: 'Keep your eyes on your second screen' });
         }
       }
