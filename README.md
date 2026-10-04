@@ -108,7 +108,7 @@ Backend:
 
 ```bash
 cd backend
-python3 -m venv myenv && source myenv/bin/activate
+python3.12 -m venv myenv && source myenv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # fill in real values, see below
 ./start_server.sh      # runs on port 8001 (or the next free port)
@@ -141,9 +141,9 @@ Frontend environment variable:
 |---|---|
 | `VITE_MEDIAPIPE_API_URL` | Base URL of the backend (REST + websocket), e.g. `http://localhost:8001` |
 
-**Python version:** the committed `backend/myenv` venv was built with Python 3.9, but `backend/render.yaml`
-and `backend/Dockerfile` both pin Render's build to Python 3.12. If you hit dependency resolution issues
-locally, build your venv with 3.12 instead of relying on the checked-in one.
+**Python version:** a local `backend/myenv` venv built with Python 3.9 may hit dependency resolution
+issues, since `backend/render.yaml` and `backend/Dockerfile` both pin Render's build to Python 3.12. Build
+your local venv with 3.12 to match.
 
 ## Known limitations
 
@@ -162,7 +162,8 @@ locally, build your venv with 3.12 instead of relying on the checked-in one.
   uses the older fixed-threshold rules in `get_gaze_score()`, not a calibrated range.
 - No automated tests are checked into the repo (only ad hoc `*.log` files from manual test sessions,
   which are gitignored).
-- The MongoDB Atlas network allowlist is open to all IPs, since Render's outbound IPs aren't fixed.
+- The MongoDB Atlas network allowlist is open to all IPs for convenience. It could be restricted to
+  Render's published outbound IP ranges for the service's region, plus a developer IP.
 - The Render free-tier backend sleeps after inactivity, so the first load after a period of no traffic
   can take about a minute.
 
