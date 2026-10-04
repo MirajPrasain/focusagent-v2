@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { ArrowRight, Trash2 } from 'lucide-react';
 import AccountActions from '../components/AccountActions';
 import Button from '../components/ui/Button';
@@ -120,9 +120,22 @@ const History = () => {
               </tr>
             </thead>
             <tbody className="tabular-nums">
+              {/* A row opens the session's summary. Its date is also a link, so a keyboard can open it */}
               {sessions.map((session) => (
-                <tr key={session.id} className="border-t border-border">
-                  <td className="whitespace-nowrap px-3 py-3.5 text-fg">{DATE_FORMAT.format(new Date(session.created_at))}</td>
+                <tr
+                  key={session.id}
+                  className="cursor-pointer border-t border-border transition-colors hover:bg-surface-raised"
+                  onClick={() => navigate(`/history/${session.id}`)}
+                >
+                  <td className="whitespace-nowrap px-3 py-3.5 text-fg">
+                    <Link
+                      to={`/history/${session.id}`}
+                      className="rounded-sm hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {DATE_FORMAT.format(new Date(session.created_at))}
+                    </Link>
+                  </td>
                   <td className="whitespace-nowrap px-3 py-3.5 text-fg-secondary">{formatLength(session.total_seconds)}</td>
                   <td className="whitespace-nowrap px-3 py-3.5 text-accent">{focusedPct(session)}%</td>
                   <td className="whitespace-nowrap px-3 py-3.5 text-fg-secondary">
@@ -134,7 +147,10 @@ const History = () => {
                       className="p-2 hover:text-distracted"
                       aria-label={`Delete session from ${DATE_FORMAT.format(new Date(session.created_at))}`}
                       disabled={deletingId === session.id}
-                      onClick={() => deleteSession(session)}
+                      onClick={(e) => {
+                        e.stopPropagation(); // not the row's click, which opens the session
+                        deleteSession(session);
+                      }}
                     >
                       <Trash2 className="h-4 w-4" aria-hidden="true" />
                     </Button>

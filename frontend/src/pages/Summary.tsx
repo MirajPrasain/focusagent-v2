@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { ArrowRight } from 'lucide-react';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft, ArrowRight } from 'lucide-react';
 import AccountActions from '../components/AccountActions';
 import Button from '../components/ui/Button';
 import Eyebrow from '../components/ui/Eyebrow';
@@ -11,7 +11,7 @@ import { apiFetch } from '../lib/api';
 
 // GET /summary (backend/ws_routes/charts.py): this user's most recent session, in whole seconds. A stretch is distracted
 // only if the score stayed below 40 for at least 2 seconds; not tracked where the browser sent no landmark message
-// for more than 2 seconds
+// for more than 2 seconds. GET /sessions/{id} (backend/routes_sessions.py) returns a saved session in the same shape
 type Segment = { start: number; end: number; state: 'focused' | 'distracted' | 'not_tracked' };
 type SessionSummary = {
   total_seconds: number;
@@ -76,21 +76,30 @@ function Stat({ label, value, unit }: { label: string; value: number; unit: stri
   );
 }
 
+// /summary: the session that just ended, saved to the account on arrival. /history/:id: a saved session, from History,
+// which is only shown: never saved again, and its actions lead back to History
 const Summary = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { id } = useParams();
   const [summary, setSummary] = useState<SessionSummary | null>(null);
   const [failed, setFailed] = useState(false);
+  const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     // The planned length in minutes, passed only by Session as it ends: its presence means this session is unsaved
-    const duration = (location.state as { duration?: number } | null)?.duration;
-    apiFetch('/summary')
+    const duration = id ? undefined : (location.state as { duration?: number } | null)?.duration;
+    apiFetch(id ? `/sessions/${encodeURIComponent(id)}` : '/summary')
       .then((res) => {
         // The token was turned down (and dropped by apiFetch): sign in again
         if (res.status === 401) {
           if (!cancelled) navigate('/login', { replace: true });
+          return null;
+        }
+        // No such saved session (deleted, or a bad link)
+        if (id && res.status === 404) {
+          if (!cancelled) setNotFound(true);
           return null;
         }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -124,7 +133,12 @@ const Summary = () => {
       .catch((err) => console.error('Failed to save the session to your history:', err));
   };
 
-  const again = (
+  const again = id ? (
+    <Link to="/history" className="inline-flex items-center gap-2 rounded-md px-5 py-4 text-[15px] text-fg-secondary transition-colors hover:text-fg">
+      <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+      Back to history
+    </Link>
+  ) : (
     <Button size="lg" onClick={() => navigate('/setup')}>
       Start another session
       <ArrowRight className="h-4 w-4" aria-hidden="true" />
@@ -132,13 +146,13 @@ const Summary = () => {
   );
 
   let body;
-  if (failed || !summary || summary.total_seconds === 0) {
-    const message = failed ? "Couldn't load this session's summary."
+  if (failed || notFound || !summary || summary.total_seconds === 0) {
+    const message = notFound ? "This session isn't in your history." : failed ? "Couldn't load this session's summary."
       : !summary ? 'Loading your summary...' : 'No focus data was recorded for this session.';
     body = (
       <div className="flex flex-1 flex-col items-center justify-center py-24 text-center">
         <p role="status" className="text-xl text-fg-secondary">{message}</p>
-        {(failed || summary) && <div className="mt-8">{again}</div>}
+        {(failed || notFound || summary) && <div className="mt-8">{again}</div>}
       </div>
     );
   } else {
@@ -184,9 +198,11 @@ const Summary = () => {
         </div>
         <div className="mt-11 flex flex-wrap items-center gap-3">
           {again}
-          <Link to="/" className="rounded-md px-5 py-4 text-[15px] text-fg-secondary transition-colors hover:text-fg">
-            Back to home
-          </Link>
+          {!id && (
+            <Link to="/" className="rounded-md px-5 py-4 text-[15px] text-fg-secondary transition-colors hover:text-fg">
+              Back to home
+            </Link>
+          )}
         </div>
       </div>
     );

@@ -52,8 +52,7 @@ async def list_sessions(current_user: User = Depends(get_current_user)):
             "duration_seconds": session.duration_seconds,
             "focused_seconds": session.focused_seconds,
             "total_seconds": session.total_seconds,
-            "not_tracked_seconds": sum(
-                segment["end"] - segment["start"] for segment in session.timeline if segment["state"] == "not_tracked"),
+            "not_tracked_seconds": not_tracked_seconds(session),
             "longest_stretch_seconds": session.longest_stretch_seconds,
             "created_at": session.created_at,
         }
@@ -61,13 +60,40 @@ async def list_sessions(current_user: User = Depends(get_current_user)):
     ]
 
 
-@router.delete("/sessions/{session_id}", status_code=204)
-async def delete_session(session_id: str, current_user: User = Depends(get_current_user)):
-    """Deletes one of the current user's sessions. 404 when there's no such session (an id that isn't an ObjectId
-    can't name one), 403 when it belongs to someone else."""
+def not_tracked_seconds(session: Session) -> int:
+    return sum(segment["end"] - segment["start"] for segment in session.timeline if segment["state"] == "not_tracked")
+
+
+async def get_own_session(session_id: str, current_user: User) -> Session:
+    """One of the current user's sessions. 404 when there's no such session (an id that isn't an ObjectId can't name
+    one), 403 when it belongs to someone else."""
     session = await Session.get(session_id) if ObjectId.is_valid(session_id) else None
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     if session.user_id != str(current_user.id):
         raise HTTPException(status_code=403, detail="Not your session")
+    return session
+
+
+@router.get("/sessions/{session_id}")
+async def get_session(session_id: str, current_user: User = Depends(get_current_user)):
+    """One of the current user's sessions with its timeline, in the shape of the /summary response
+    (ws_routes/charts.py) that the summary page shows, so it can show a past session too."""
+    session = await get_own_session(session_id, current_user)
+    return {
+        "id": str(session.id),
+        "duration_seconds": session.duration_seconds,
+        "total_seconds": session.total_seconds,
+        "focused_seconds": session.focused_seconds,
+        "not_tracked_seconds": not_tracked_seconds(session),
+        "longest_focused_seconds": session.longest_stretch_seconds,
+        "segments": session.timeline,
+        "created_at": session.created_at,
+    }
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+async def delete_session(session_id: str, current_user: User = Depends(get_current_user)):
+    """Deletes one of the current user's sessions: 404 or 403 as in get_own_session."""
+    session = await get_own_session(session_id, current_user)
     await session.delete()

@@ -29,6 +29,8 @@ function App() {
           <Route path= "/session" element={<Session />} />
           <Route path="/summary" element={<Summary />} />
           <Route path="/history" element={<History />} />
+          {/* A saved session from History, shown by the summary page */}
+          <Route path="/history/:id" element={<Summary />} />
         </Route>
         {/* Dev-only data collection tool; intentionally not linked in nav */}
         <Route path="/data-collect" element={<DataCollect />} />
